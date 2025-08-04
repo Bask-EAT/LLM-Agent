@@ -1,0 +1,26 @@
+# FastAPI 및 웹 서버
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic==2.5.0
+
+# 환경 변수 관리
+python-dotenv==1.0.0
+
+# HTTP 클라이언트
+aiohttp==3.9.1
+requests==2.31.0
+
+# AI/ML 관련
+langgraph
+langchain-google-genai
+google-generativeai
+
+# 유튜브 관련
+youtube-transcript-api==0.6.2
+yt-dlp==2024.3.10
+
+# 음성 인식
+openai-whisper==20231117
+
+# 기타 유틸리티
+typing-extensions>=4.8.0 
