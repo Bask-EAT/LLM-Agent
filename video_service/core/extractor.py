@@ -5,14 +5,16 @@ from typing import TypedDict, List
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.tools import tool
+import logging
 
-# Google Cloud 인증 설정 (환경 변수로 변경)
-# os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = r"C:\Users\201\dev\myWorkspace\cook-youtube\cook-youtube-himedia2025-f6990d7e81de.json"
 
 # 다른 파일에 있는 스크립트 추출 함수를 가져옵니다.
 from .transcript import get_youtube_transcript, get_youtube_title, get_youtube_duration
 
-# --- 상태, 데이터 구조, 노드 등 LangGraph 관련 코드 ---
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Pydantic 모델 정의
 class Recipe(BaseModel):
@@ -26,45 +28,46 @@ class GraphState(TypedDict):
     video_title: str
     recipe: Recipe
     error: str
+    final_answer: str
 
 
 # 영상 제목 추출을 담당하는 노드
 def title_node(state: GraphState) -> GraphState:
-    print("--- 영상 제목 추출 노드 실행 ---")
+    logger.info("--- 영상 제목 추출 노드 실행 ---")
     try:
         video_title = get_youtube_title(state["youtube_url"])
         return {"video_title": video_title}
     except Exception as e:
-        print(f"영상 제목 추출 오류: {e}")
+        logger.error(f"영상 제목 추출 오류: {e}")
         return {"video_title": "요리명을 추출할 수 없습니다."}
 
 
 # 스크립트 추출을 담당하는 노드
 def transcript_node(state: GraphState) -> GraphState:
-    print("--- 스크립트 추출 노드 실행 ---")
+    logger.info("--- 스크립트 추출 노드 실행 ---")
     try:
         duration = get_youtube_duration(state["youtube_url"])
-        print(f"DEBUG: 영상 길이(초): {duration}")
+        logger.debug(f"DEBUG: 영상 길이(초): {duration}")
         if duration > 1200:
-            print("WARN: 20분 초과 영상 - 처리 중단")
+            logger.warning("WARN: 20분 초과 영상 - 처리 중단")
             return {"error": "20분을 초과하는 영상은 처리할 수 없습니다."}
         transcript_text = get_youtube_transcript(state["youtube_url"])
-        print(f"DEBUG: 추출된 스크립트 길이: {len(transcript_text) if transcript_text else 0}")
+        logger.debug(f"DEBUG: 추출된 스크립트 길이: {len(transcript_text) if transcript_text else 0}")
 
-        if not transcript_text or len(transcript_text.strip()) < 10:
-            print("WARN: 스크립트가 없거나 너무 짧음")
+        if not transcript_text or len(transcript_text.strip()) < 50:
+            logger.warning("WARN: 스크립트가 없거나 너무 짧음")
             return {"error": "스크립트를 추출할 수 없습니다. (자막/음성 없음 또는 너무 짧음)"}
-        print(f"INFO: 스크립트 일부 미리보기: {transcript_text[:100]}...")
+        logger.info(f"INFO: 스크립트 일부 미리보기: {transcript_text[:100]}...")
         return {"transcript": transcript_text}
     
     except Exception as e:
-        print(f"스크립트 추출 오류: {e}")
+        logger.error(f"스크립트 추출 오류: {e}")
         return {"error": f"스크립트 추출 중 오류: {e}"}
 
 
 # 새로운 AI 판별 노드를 추가합니다.
 def recipe_validator_node(state: GraphState) -> GraphState:
-    print("--- AI 레시피 판별 노드 실행 ---")
+    logger.info("--- AI 레시피 판별 노드 실행 ---")
     title = state.get("video_title", "")
     transcript = state.get("transcript", "")
     
@@ -91,7 +94,7 @@ def recipe_validator_node(state: GraphState) -> GraphState:
         """
         
         result = llm.invoke(prompt).content.strip()
-        print(f"✅ AI 판별 결과: {result}")
+        logger.info(f"✅ AI 판별 결과: {result}")
 
         if "예" in result:
             return {} # 다음 단계로 진행 (에러 없음)
@@ -99,13 +102,13 @@ def recipe_validator_node(state: GraphState) -> GraphState:
             return {"error": "AI가 레시피 영상이 아니라고 판단했습니다."}
 
     except Exception as e:
-        print(f"❌ AI 판별 중 오류: {e}")
+        logger.error(f"❌ AI 판별 중 오류: {e}")
         return {"error": f"AI 판별 중 오류 발생: {str(e)}"}
 
 
 # 레시피 추출을 담당하는 노드 (Gemini와 연결하는 로직)
 def recipe_extract_node(state: GraphState) -> GraphState:
-    print("--- 레시피 추출 노드 실행 (구조화된 출력 방식) ---")
+    logger.info("--- 레시피 추출 노드 실행 (구조화된 출력 방식) ---")
     transcript = state.get("transcript")
     video_title = state.get("video_title", "요리명을 추출할 수 없습니다.")
 
@@ -144,14 +147,25 @@ def recipe_extract_node(state: GraphState) -> GraphState:
 
         # LLM 호출
         recipe_object = structured_llm.invoke(prompt)
-        print("✅ LLM 구조화된 출력 결과:", recipe_object)
+        logger.info("✅ LLM 구조화된 출력 결과:", recipe_object)
+
+        # 사용자에게 보여줄 최종 답변을 생성합니다.
+        answer = (f"✅ 유튜브 영상에서 '{recipe_object.food_name}' 레시피를 성공적으로 추출했습니다!\n\n"
+                  f"📋 **필요한 재료:**\n- " + "\n- ".join(recipe_object.ingredients) + "\n\n"
+                  f"👨‍🍳 **조리법:**\n" + "\n".join(f"{i+1}. {step}" for i, step in enumerate(recipe_object.steps)))
 
         # Pydantic 객체를 state에 저장
-        return {"recipe": recipe_object}
+        return {"recipe": recipe_object, "final_answer" : answer}
         
     except Exception as e:
-        print(f"레시피 추출 오류: {e}")
+        logger.error(f"레시피 추출 오류: {e}")
         return {"error": f"레시피 추출 중 오류 발생: {str(e)}"}
+
+
+
+def should_continue(state: GraphState) -> str:
+    # 에러가 있으면 그래프를 종료하고, 없으면 다음 단계로 진행합니다.
+    return END if state.get("error") else "extractor"
 
 
 # --- 그래프 구성 ---
@@ -218,3 +232,23 @@ def process_video_url(youtube_url: str) -> dict:
             "ingredients": [],
             "recipe": []
         } 
+    
+
+# --- LangChain 도구(Tool) 정의 ---
+@tool
+def extract_recipe_from_youtube(youtube_url: str) -> str:
+    """
+    유튜브(YouTube) URL에서 요리 레시피(재료, 조리법)를 추출할 때 사용합니다.
+    사용자가 유튜브 링크를 제공하며 레시피를 분석, 요약, 또는 추출해달라고 요청할 경우에만 이 도구를 사용해야 합니다.
+    입력값은 반드시 유튜브 URL이어야 합니다.
+    """
+    logger.info(f"유튜브 레시피 추출 도구 실행: {youtube_url}")
+    if "youtube.com" not in youtube_url and "youtu.be" not in youtube_url:
+        return "유효한 유튜브 URL이 아닙니다. 다시 확인해주세요."
+        
+    app = create_recipe_graph()
+    # LangGraph 실행
+    result = app.invoke({"youtube_url": youtube_url})
+    
+    # 최종 결과 또는 에러 메시지를 반환합니다.
+    return result.get("final_answer") or result.get("error", "알 수 없는 오류가 발생했습니다.")

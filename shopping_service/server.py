@@ -5,6 +5,22 @@ import uvicorn
 import logging
 import json
 from agent import shopping_agent
+import sys, os
+
+# --- 다른 폴더에 있는 모듈을 가져오기 위한 경로 설정 ---
+# 현재 파일(planning_agent.py)이 있는 디렉토리의 절대 경로를 가져옵니다.
+# 예: /path/to/your/project/intent_service
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# 부모 디렉토리(프로젝트의 루트 폴더) 경로를 가져옵니다.
+# 예: /path/to/your/project
+project_root = os.path.dirname(current_dir)
+
+# 파이썬이 모듈을 검색하는 경로 리스트에 프로젝트 루트 폴더를 추가합니다.
+sys.path.append(project_root)
+# ----------------------------------------------------
+from intent_service.planning_agent import run_agent
+
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -30,9 +46,12 @@ class ShoppingResponse(BaseModel):
     recipe: list
     agent_type: str = "shopping"
 
-@app.post("/chat", response_model=ShoppingResponse)
-async def chat_message(request: Request):
-    """채팅 메시지 처리 (프론트엔드 호환용)"""
+@app.post("/chat")
+async def chat_with_agent(request: Request):
+    """    
+    사용자의 모든 메시지를 받아 플래닝 에이전트가 처리합니다.
+    세션별로 대화 기록을 관리합니다.
+    """
     try:
         # 들어오는 데이터 로깅
         logger.info(f"=== /chat 엔드포인트 호출됨 ===")
@@ -42,6 +61,8 @@ async def chat_message(request: Request):
         body = await request.json()
         logger.info(f"받은 JSON 데이터: {body}")
         
+        # session_id = body.get("session_id", "default_session") # 클라이언트에서 세션 ID를 보내주면 좋습니다.
+
         message = body.get("message")
         if not message:
             logger.error("message 필드가 없습니다")
@@ -49,18 +70,19 @@ async def chat_message(request: Request):
         
         logger.info(f"처리할 메시지: {message}")
         
-        # ShoppingAgent로 메시지 처리
-        result = await shopping_agent.process_message(message)
-        logger.info(f"ShoppingAgent 처리 결과: {result}")
+        # 에이전트 실행
+        response_text = await run_agent(message)
         
-        return ShoppingResponse(**result)
+        logger.info(f"최종 응답: {response_text}")
+        
+        return {"response": response_text}
         
     except json.JSONDecodeError as e:
         logger.error(f"JSON 파싱 오류: {e}")
         raise HTTPException(status_code=422, detail="잘못된 JSON 형식입니다.")
     except Exception as e:
-        logger.error(f"채팅 메시지 처리 오류: {e}")
-        raise HTTPException(status_code=500, detail="메시지 처리 중 오류가 발생했습니다.")
+        logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"서버 내부 오류가 발생했습니다: {e}")
 
 @app.post("/process", response_model=ShoppingResponse)
 async def process_message(request: ShoppingRequest):

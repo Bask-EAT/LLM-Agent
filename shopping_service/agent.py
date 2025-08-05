@@ -3,6 +3,7 @@ import os
 import json
 import logging
 from dotenv import load_dotenv
+from langchain_core.tools import tool
 
 # 환경 변수 로드
 load_dotenv()
@@ -23,6 +24,16 @@ class ShoppingAgent:
         self.model = genai.GenerativeModel("gemini-1.5-flash")
         self.conversation_history = []
         self.last_dish = None  # 마지막 언급된 요리명 캐시
+
+
+    def _add_assistant_response(self, content: str):
+        self.conversation_history.append({"role": "assistant", "content": content})
+
+    def _get_recent_context(self, count: int = 3) -> str:
+        if not self.conversation_history: return "대화 히스토리가 없습니다."
+        recent = self.conversation_history[-count:]
+        return "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent])
+
 
     async def process_message(self, message: str) -> dict:
         """메인 메시지 처리 함수"""
@@ -554,3 +565,15 @@ class ShoppingAgent:
 
 # ShoppingAgent 인스턴스 생성
 shopping_agent = ShoppingAgent()
+
+@tool
+async def text_based_cooking_assistant(query: str) -> str:
+    """
+    텍스트 기반의 요리 관련 질문에 답변할 때 사용합니다.
+    예를 들어, 특정 요리의 레시피, 재료, 조리 팁을 물어보거나 음식 종류(한식, 중식 등)를 추천해달라고 할 때 유용합니다.
+    유튜브 링크(URL)가 포함된 질문에는 이 도구를 사용하지 마세요.
+    사용자의 질문을 그대로 입력값으로 사용하세요.
+    """
+    logger.info(f"텍스트 요리 도우미 실행: {query}")
+    result = await shopping_agent.process_message(query)
+    return result['answer']
