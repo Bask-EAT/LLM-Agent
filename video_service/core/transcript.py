@@ -1,10 +1,10 @@
 # 스크립트 추출 기능 (API, Whisper 모두)
 import os
 import re
-import requests
 from youtube_transcript_api import YouTubeTranscriptApi
 import whisper
 import yt_dlp
+import torch
 
 
 # 유튜브 영상 URL에서 video_id 추출 함수
@@ -73,7 +73,10 @@ def _get_transcript_from_audio(url: str) -> str:
 
         # Whisper 모델 로드 및 스크립트 변환
         print("🎤 Whisper 음성 인식 시작...")
-        model = whisper.load_model("medium")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = whisper.load_model("medium", device=device)
+        print("Whisper device:", device)
+
         # 언어 자동 감지
         result = model.transcribe(audio_file, language="ko", fp16=False)
         transcript_text = result["text"]
