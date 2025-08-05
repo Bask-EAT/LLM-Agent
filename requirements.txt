@@ -16,7 +16,7 @@ langchain-google-genai
 google-generativeai
 
 # 유튜브 관련
-youtube-transcript-api==0.6.2
+youtube-transcript-api==1.2.1
 yt-dlp==2024.3.10
 
 # 음성 인식
