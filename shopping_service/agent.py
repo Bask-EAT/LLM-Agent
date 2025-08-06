@@ -63,6 +63,17 @@ class ShoppingAgent:
                     "recipe": []
                 }
                 
+            elif intent == "INGREDIENTS_TO_DISHES":
+                result = await self.recommend_dishes_by_ingredients(message)
+                response_text = result.get("answer", "재료로 만들 수 있는 요리를 찾을 수 없습니다.")
+                
+                self._add_assistant_response(response_text)
+                return {
+                    "answer": response_text,
+                    "ingredients": result.get("extracted_ingredients", []),
+                    "recipe": []
+                }
+                
             elif intent == "RECIPE":
                 dish = self._extract_dish_smart(message)
                 result = await self.get_recipe_optimized(dish)
@@ -166,20 +177,24 @@ class ShoppingAgent:
         context = self._get_recent_context(3)  # 최근 3개 메시지만 사용
         
         prompt = f"""
+        당신은 세계적으로 유명한 프로 셰프이자 요리 전문가입니다.
+        Pierre Koffmann(프랑스), Gordon Ramsay(미국식), Ken Hom(중식), Massimo Bottura(이탈리아), José Andrés(스페인식), Yotam Ottolenghi(지중해식), 강레오(한식), 안성재(한식) 셰프의 경험과 스타일을 모두 갖춘 요리 컨설턴트입니다.
+        
         대화 컨텍스트:
         {context}
         
         현재 메시지: {message}
         
         의도를 분류하세요:
-        - CATEGORY: 음식 카테고리 요청 (한식 추천, 중식 추천, 음식추천)
+        - CATEGORY: 음식 카테고리 요청 (한식 추천, 중식 추천, 프랑스식 추천, 이탈리아식 추천 등)
+        - INGREDIENTS_TO_DISHES: 재료로 요리 추천 요청 (재료 가지고, 재료로 뭐 만들까, 재료로 할 수 있는 요리 등)
         - RECIPE: 레시피 요청 (레시피 알려줘, 조리법, 만드는 법, 그거 레시피, 그 음식 레시피, 레시피)
         - INGREDIENTS: 재료 요청 (재료 알려줘, 재료만, 그거 재료, 그 음식 재료, 재료)
         - TIP: 조리 팁 (팁 알려줘, 조리 팁, 그거 팁, 팁)
         - OTHER: 그 외
 
         "그거", "그 음식", "이거" 같은 대명사는 이전 대화의 요리를 참조합니다.
-        출력은 CATEGORY, RECIPE, INGREDIENTS, TIP, OTHER 중 하나만
+        출력은 CATEGORY, INGREDIENTS_TO_DISHES, RECIPE, INGREDIENTS, TIP, OTHER 중 하나만
         """
         
         try:
@@ -260,8 +275,28 @@ class ShoppingAgent:
 
     async def recommend_dishes_optimized(self, category: str) -> list:
         """최적화된 요리 추천"""
+        # 카테고리별 담당 셰프 매핑
+        chef_mapping = {
+            "한식": "강레오, 안성재",
+            "중식": "Ken Hom", 
+            "프랑스식": "Pierre Koffmann",
+            "이탈리아식": "Massimo Bottura",
+            "스페인식": "José Andrés",
+            "지중해식": "Yotam Ottolenghi",
+            "미국식": "Gordon Ramsay"
+        }
+        
+        # 카테고리에서 셰프 찾기
+        chef = "강레오, 안성재"  # 기본값은 한식
+        for cat, chef_name in chef_mapping.items():
+            if cat in category:
+                chef = chef_name
+                break
+        
         prompt = f"""
-        "{category}" 요청에 맞는 집에서 할 수 있는 요리 5개를 JSON 배열로 출력하세요.
+        당신은 {chef} 셰프입니다.
+        "{category}" 요청에 맞는 가정에서 쉽게 만들 수 있는 요리 5개를 JSON 배열로 출력하세요.
+        각 요리는 실제로 만들 수 있는 구체적인 요리명으로 제안해주세요.
         예시: ["요리1", "요리2", "요리3", "요리4", "요리5"]
         """
         
@@ -278,6 +313,62 @@ class ShoppingAgent:
         except Exception as e:
             logger.error(f"요리 추천 오류: {e}")
             return ["추천 요리를 찾을 수 없습니다"]
+    
+    async def recommend_dishes_by_ingredients(self, message: str) -> dict:
+        """재료로 요리 추천"""
+        prompt = f"""
+        당신은 강레오, 안성재 한식 셰프입니다.
+        
+        사용자 메시지: "{message}"
+        
+        1. 먼저 언급된 재료들을 JSON 배열로 추출하세요.
+        2. 해당 재료들로 가정에서 만들 수 있는 한식 요리 3가지를 추천하세요.
+        
+        응답 형식:
+        {{
+          "ingredients": ["재료1", "재료2", "재료3"],
+          "dishes": ["요리1", "요리2", "요리3"]
+        }}
+        """
+        
+        try:
+            resp = self.model.generate_content(prompt)
+            response_text = self._clean_json_response(resp.text)
+            result = json.loads(response_text)
+            
+            ingredients = result.get("ingredients", [])
+            dishes = result.get("dishes", [])
+            
+            if not dishes:
+                return {
+                    "answer": "해당 재료로 만들 수 있는 요리를 찾을 수 없습니다.",
+                    "extracted_ingredients": ingredients
+                }
+            
+            response_text = f"다음 재료들로 만들 수 있는 한식 요리를 추천드려요:\n\n"
+            response_text += "📋 [사용 재료]\n"
+            for i, ingredient in enumerate(ingredients, 1):
+                response_text += f"• {ingredient}\n"
+            
+            response_text += "\n🍳 [추천 요리]\n"
+            for i, dish in enumerate(dishes, 1):
+                response_text += f"{i}. {dish}\n"
+            
+            response_text += "\n원하는 요리 형식이 있으신가요? (프랑스식, 이탈리아식, 미국식 등)"
+            response_text += "\n또는 위 요리 중 어떤 것의 레시피를 알고 싶으시면 번호나 요리명을 말씀해주세요!"
+            
+            return {
+                "answer": response_text,
+                "extracted_ingredients": ingredients,
+                "recommended_dishes": dishes
+            }
+            
+        except Exception as e:
+            logger.error(f"재료 기반 요리 추천 오류: {e}")
+            return {
+                "answer": "재료 분석 중 오류가 발생했습니다. 다시 시도해주세요.",
+                "extracted_ingredients": []
+            }
 
     async def get_recipe_optimized(self, dish: str) -> dict:
         """최적화된 레시피 조회"""
@@ -285,11 +376,18 @@ class ShoppingAgent:
             return await self._handle_vague_dish_optimized(dish)
         
         prompt = f"""
+        당신은 세계적으로 유명한 프로 셰프입니다.
+        Pierre Koffmann(프랑스), Gordon Ramsay(미국식), Ken Hom(중식), Massimo Bottura(이탈리아), José Andrés(스페인식), Yotam Ottolenghi(지중해식), 강레오(한식), 안성재(한식) 셰프의 경험을 바탕으로 정확한 레시피를 제공합니다.
+        
         '{dish}' 레시피를 JSON으로 작성하세요:
+        - 조리법은 최대 15단계 이하로 작성
+        - 복잡한 과정은 요약해서 핵심만 포함
+        - 정확한 재료와 실용적인 조리법 제공
+        
         {{
           "title": "{dish}",
-          "ingredients": ["재료1", "재료2"],
-          "steps": ["1단계", "2단계"]
+          "ingredients": ["재료1 (정확한 양)", "재료2 (정확한 양)"],
+          "steps": ["1단계 설명", "2단계 설명"]
         }}
         """
         
@@ -297,6 +395,10 @@ class ShoppingAgent:
             resp = self.model.generate_content(prompt)
             response_text = self._clean_json_response(resp.text)
             recipe = json.loads(response_text)
+            
+            # 조리법 단계 수 제한 (15단계 이하)
+            if "steps" in recipe and len(recipe["steps"]) > 15:
+                recipe["steps"] = recipe["steps"][:15]
             
             # 기본값 설정
             recipe.setdefault("title", dish)
@@ -313,8 +415,11 @@ class ShoppingAgent:
     async def get_ingredients_optimized(self, dish: str) -> list:
         """최적화된 재료 조회"""
         prompt = f"""
-        '{dish}'에 필요한 재료만 JSON 배열로 출력하세요.
-        예시: ["재료1", "재료2", "재료3"]
+        당신은 세계적으로 유명한 프로 셰프입니다.
+        Pierre Koffmann(프랑스), Gordon Ramsay(미국식), Ken Hom(중식), Massimo Bottura(이탈리아), José Andrés(스페인식), Yotam Ottolenghi(지중해식), 강레오(한식), 안성재(한식) 셰프의 전문 지식을 바탕으로 정확한 재료 정보를 제공합니다.
+        
+        '{dish}'에 필요한 정확한 재료와 양을 JSON 배열로 출력하세요.
+        예시: ["재료1 (정확한 양)", "재료2 (정확한 양)", "재료3 (정확한 양)"]
         """
         
         try:
@@ -335,8 +440,12 @@ class ShoppingAgent:
     async def get_tips_optimized(self, dish: str) -> list:
         """최적화된 조리 팁 조회"""
         prompt = f"""
-        '{dish}'를 더 맛있게 만드는 팁 3개를 JSON 배열로 출력하세요.
-        예시: ["팁1", "팁2", "팁3"]
+        당신은 세계적으로 유명한 프로 셰프입니다.
+        Pierre Koffmann, Gordon Ramsay, Ken Hom, Massimo Bottura, José Andrés, Yotam Ottolenghi, 강레오, 안성재 셰프의 실무 경험을 바탕으로 전문적이고 실용적인 조리 팁을 제공합니다.
+        
+        '{dish}'를 더 맛있게 만드는 프로 셰프의 실무 경험 기반 조리 팁 3개를 JSON 배열로 출력하세요.
+        각 팁은 구체적이고 실용적이어야 합니다.
+        예시: ["구체적인 팁1", "실용적인 팁2", "전문가 팁3"]
         """
         
         try:
@@ -365,8 +474,11 @@ class ShoppingAgent:
     async def _handle_vague_dish_optimized(self, dish: str) -> dict:
         """최적화된 모호한 요리 처리"""
         prompt = f"""
-        '{dish}'의 인기 있는 3-5가지 종류를 JSON 배열로 출력하세요.
-        예시: ["종류1", "종류2", "종류3"]
+        당신은 세계적인 프로 셰프입니다.
+        사용자가 입력한 '{dish}'가 광범위한 요리 종류라면 해당 음식의 대표적인 하위 요리 3~5가지를 JSON 배열로 출력하세요.
+        요리명만 출력하고 설명은 필요없습니다.
+        
+        예시: ["구체적인 요리명1", "구체적인 요리명2", "구체적인 요리명3"]
         """
         
         try:
@@ -460,6 +572,10 @@ class ShoppingAgent:
                                 recipe["steps"].append(step)
                 break
         
+        # 조리법 단계 수 제한 (15단계 이하)
+        if len(recipe["steps"]) > 15:
+            recipe["steps"] = recipe["steps"][:15]
+        
         # 기본값 설정
         if not recipe["ingredients"]:
             recipe["ingredients"] = ["재료 정보를 찾을 수 없습니다"]
@@ -544,23 +660,6 @@ class ShoppingAgent:
                 break
         
         return tips if tips else ["조리 팁을 찾을 수 없습니다"]
-
-    def _get_recent_context(self, count: int = 3) -> str:
-        """최근 대화 컨텍스트 반환"""
-        if len(self.conversation_history) == 0:
-            return "대화 히스토리가 없습니다."
-        
-        recent_history = self.conversation_history[-count:]
-        context = ""
-        for i, msg in enumerate(recent_history):
-            role = "사용자" if msg["role"] == "user" else "어시스턴트"
-            context += f"{i+1}. {role}: {msg['content']}\n"
-        
-        return context.strip()
-
-    def _add_assistant_response(self, content: str):
-        """어시스턴트 응답을 히스토리에 추가"""
-        self.conversation_history.append({"role": "assistant", "content": content})
 
 
 # ShoppingAgent 인스턴스 생성

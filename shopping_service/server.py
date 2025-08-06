@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -44,9 +44,8 @@ class ShoppingResponse(BaseModel):
     answer: str
     ingredients: list
     recipe: list
-    agent_type: str = "shopping"
 
-@app.post("/chat")
+@app.post("/chat", response_model=ShoppingResponse, status_code=status.HTTP_200_OK)
 async def chat_with_agent(request: Request):
     """    
     사용자의 모든 메시지를 받아 플래닝 에이전트가 처리합니다.
@@ -70,12 +69,21 @@ async def chat_with_agent(request: Request):
         
         logger.info(f"처리할 메시지: {message}")
         
-        # 에이전트 실행
-        response_text = await run_agent(message)
+        # 에이전트 실행 (session_id 추가)
+        session_id = "default_session"  # 임시로 기본 세션 ID 사용
+        response_text = await run_agent(message, session_id)
         
         logger.info(f"최종 응답: {response_text}")
         
-        return {"response": response_text}
+        # 프론트엔드가 기대하는 형식으로 응답 변환
+        response_data = {
+            "answer": response_text,
+            "ingredients": [],  # 일단 빈 배열로 설정
+            "recipe": []       # 일단 빈 배열로 설정
+        }
+        logger.info(f"반환할 응답 데이터: {response_data}")
+        
+        return response_data
         
     except json.JSONDecodeError as e:
         logger.error(f"JSON 파싱 오류: {e}")
@@ -119,4 +127,4 @@ async def root():
 
 if __name__ == "__main__":
     logger.info("=== ShoppingAgent Server 시작 ===")
-    uvicorn.run(app, host="0.0.0.0", port=8002) 
+    uvicorn.run("server:app", host="0.0.0.0", port=8002, reload=True) 
