@@ -6,18 +6,21 @@ from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.messages import HumanMessage, AIMessage
 import sys
 import os
+from dotenv import load_dotenv
 
-# --- 다른 폴더에 있는 모듈을 가져오기 위한 경로 설정 ---
+
+# .env 파일 로드 및 API 키 설정
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# 다른 폴더에 있는 모듈을 가져오기 위한 경로 설정
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
 # 부모 디렉토리(프로젝트의 루트 폴더) 경로를 가져옵니다.
-# 예: /path/to/your/project
 project_root = os.path.dirname(current_dir)
 
 # 파이썬이 모듈을 검색하는 경로 리스트에 프로젝트 루트 폴더를 추가합니다.
 sys.path.append(project_root)
-# ----------------------------------------------------
-
 
 # 위에서 수정한 파일들로부터 '도구'들을 가져옵니다.
 from shopping_service.agent import text_based_cooking_assistant
@@ -27,7 +30,12 @@ from video_service.core.extractor import extract_recipe_from_youtube
 tools = [text_based_cooking_assistant, extract_recipe_from_youtube]
 
 # 2. LLM 모델 설정 (Planning을 위해서는 고성능 모델을 추천합니다)
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro-latest", temperature=0, convert_system_message_to_human=True)
+llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-pro-latest", 
+    temperature=0, 
+    convert_system_message_to_human=True,
+    google_api_key=GEMINI_API_KEY,
+)
 
 # 3. 프롬프트(Prompt) 설정 - 에이전트에게 내리는 지시사항
 prompt = ChatPromptTemplate.from_messages([

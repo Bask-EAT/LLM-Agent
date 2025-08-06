@@ -6,12 +6,22 @@ import uvicorn
 import logging
 import json
 import os
+from dotenv import load_dotenv
 
 # config 모듈 import (Google Cloud 인증 설정을 위해)
 import config
 
 # core 모듈에서 함수 import
 from core.extractor import process_video_url
+
+# .env 파일에서 환경 변수를 로드하고, os.environ에 직접 설정합니다.
+# 이 코드는 서버가 시작될 때 단 한 번만 실행됩니다.
+load_dotenv()
+if os.getenv("GEMINI_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY")
+    print(f"✅ [서버 시작] Gemini API Key 로드 성공!")
+else:
+    print("❌ [서버 시작] .env 파일에서 GEMINI_API_KEY를 찾을 수 없습니다.")
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)

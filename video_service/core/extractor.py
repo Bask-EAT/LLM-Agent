@@ -54,7 +54,7 @@ def transcript_node(state: GraphState) -> GraphState:
         transcript_text = get_youtube_transcript(state["youtube_url"])
         logger.debug(f"DEBUG: 추출된 스크립트 길이: {len(transcript_text) if transcript_text else 0}")
 
-        if not transcript_text or len(transcript_text.strip()) < 50:
+        if not transcript_text or len(transcript_text.strip()) < 10:
             logger.warning("WARN: 스크립트가 없거나 너무 짧음")
             return {"error": "스크립트를 추출할 수 없습니다. (자막/음성 없음 또는 너무 짧음)"}
         logger.info(f"INFO: 스크립트 일부 미리보기: {transcript_text[:100]}...")

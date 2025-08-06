@@ -7,18 +7,9 @@ import json
 from agent import shopping_agent
 import sys, os
 
-# --- 다른 폴더에 있는 모듈을 가져오기 위한 경로 설정 ---
-# 현재 파일(planning_agent.py)이 있는 디렉토리의 절대 경로를 가져옵니다.
-# 예: /path/to/your/project/intent_service
 current_dir = os.path.dirname(os.path.abspath(__file__))
-
-# 부모 디렉토리(프로젝트의 루트 폴더) 경로를 가져옵니다.
-# 예: /path/to/your/project
 project_root = os.path.dirname(current_dir)
-
-# 파이썬이 모듈을 검색하는 경로 리스트에 프로젝트 루트 폴더를 추가합니다.
 sys.path.append(project_root)
-# ----------------------------------------------------
 from intent_service.planning_agent import run_agent
 
 

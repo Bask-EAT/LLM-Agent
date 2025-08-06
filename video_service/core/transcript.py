@@ -5,6 +5,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 import whisper
 import yt_dlp
 import torch
+from faster_whisper import WhisperModel
 
 
 # 유튜브 영상 URL에서 video_id 추출 함수
@@ -43,47 +44,43 @@ def _get_transcript_from_audio(url: str) -> str:
     temp_dir = "temp_audio"
     os.makedirs(temp_dir, exist_ok=True)
     
-    # yt-dlp 옵션 설정: 최고의 오디오를 m4a 형식으로 다운로드
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'), # 파일명: 비디오ID.확장자
+        'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'm4a', # m4a 또는 mp3 등
+            'preferredcodec': 'm4a',
         }],
         'quiet': True,
     }
 
     try:
-        # 오디오 다운로드
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             video_id = info['id']
             ext = info['ext']
-            # 실제 저장된 파일 경로
-            audio_file = os.path.join(temp_dir, f"{video_id}.m4a") # preferredcodec와 확장자 맞춤
-
+            audio_file = os.path.join(temp_dir, f"{video_id}.m4a")
             if not os.path.exists(audio_file):
-                 # 간혹 확장자가 다를 경우를 대비
-                 audio_file = os.path.join(temp_dir, f"{video_id}.{ext}")
-                 if not os.path.exists(audio_file):
-                     raise FileNotFoundError("다운로드된 오디오 파일을 찾을 수 없습니다.")
+                audio_file = os.path.join(temp_dir, f"{video_id}.{ext}")
+                if not os.path.exists(audio_file):
+                    raise FileNotFoundError("다운로드된 오디오 파일을 찾을 수 없습니다.")
 
         print(f"✅ 오디오 다운로드 완료: {audio_file}")
 
-        # Whisper 모델 로드 및 스크립트 변환
-        print("🎤 Whisper 음성 인식 시작...")
+        # faster-whisper 모델 로드 및 음성 인식
+        print("🎤 Faster-Whisper 음성 인식 시작...")
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = whisper.load_model("medium", device=device)
-        print("Whisper device:", device)
+        compute_type = "float16" if device == "cuda" else "int8"
+        model_size = "medium"  # 필요에 따라 tiny, base, small, medium, large 등 선택
 
-        # 언어 자동 감지
-        result = model.transcribe(audio_file, language="ko", fp16=False)
-        transcript_text = result["text"]
-        print(f"✅ Whisper 음성 인식 완료: {transcript_text[:100]}...")  # 변환된 텍스트 일부를 로그로 확인
+        model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        print("Faster-Whisper device:", device)
+
+        segments, info = model.transcribe(audio_file, language="ko")
+        transcript_text = " ".join([segment.text for segment in segments])
+        print(f"✅ Faster-Whisper 음성 인식 완료: {transcript_text[:100]}...")
 
     finally:
-        # 작업 후 임시 파일 삭제
         if 'audio_file' in locals() and os.path.exists(audio_file):
             os.remove(audio_file)
         if os.path.exists(temp_dir) and not os.listdir(temp_dir):
@@ -122,4 +119,4 @@ def get_youtube_duration(url: str) -> int:
             return duration
     except Exception as e:
         print(f"ERROR: 영상 길이 추출 실패: {e}")
-        return 0 
+        return 0
