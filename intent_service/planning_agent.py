@@ -7,6 +7,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 import sys
 import os
 from dotenv import load_dotenv
+import json
+import re
 
 
 # .env 파일 로드 및 API 키 설정
@@ -53,8 +55,26 @@ prompt = ChatPromptTemplate.from_messages([
       스스로 계획을 세워 도구들을 순서대로 사용하여 최종 답변을 만드세요.
       1. 먼저 'extract_recipe_from_youtube'로 영상의 핵심 정보를 추출합니다.
       2. 그 다음, 추출된 정보를 바탕으로 'text_based_cooking_assistant'에 추가 질문을 하여 답변을 완성합니다.
-    - **extract_recipe_from_youtube 도구의 결과는 반드시 JSON 형태(food_name, ingredients, steps)를 그대로 반환하세요.**
-    - 모든 답변은 친절한 한국어 말투로 정리해서 최종 사용자에게 전달해주세요.
+    
+    ## 도구 사용 지침
+    - **두 도구('text_based_cooking_assistant'와 'extract_recipe_from_youtube')는 모두 동일한 JSON 형식의 객체를 반환합니다.**
+    - 반환되는 JSON 객체에는 반드시 'food_name', 'ingredients', 'recipe' 키가 포함됩니다.
+    - JSON 응답의 예시는 다음과 같습니다:
+    ```json
+    {{
+      "food_name": "난자완스",
+      "ingredients": ["돼지고기 다짐육 (300g)", "두부 (100g)", ...],
+      "recipe": ["재료를 잘 섞어 반죽을 만듭니다.", "완자를 빚어 팬에 굽습니다.", ...],
+      "answer": "네, 난자완스 레시피에 대한 재료와 조리법입니다..."
+    }}
+    ```
+     
+    ## 최종 답변 생성 규칙
+    # - 도구의 JSON 결과를 바탕으로 **`food_name`, `ingredients`, `recipe` 정보를 추출하여 사용자에게 보여줄 최종 답변을 구성하세요.**
+    # - 단순히 도구의 응답 문자열을 그대로 반환하는 것이 아니라, 친절한 한국어 말투로 정리해서 최종 사용자에게 전달해주세요.
+    - 도구에서 반환되는 **JSON 객체를 문자열로 변환하지 말고**, 최종 응답으로 그대로 반환하세요.
+    - 만약 도구 결과가 유효한 JSON 객체가 아닐 경우에만 친절한 문구로 사용자에게 응답을 제공하세요.
+    - 도구 사용 후에는 반드시 결과를 검토하고, 필요한 경우 추가 질문을 통해 정보를 보완하세요.
     """),
     MessagesPlaceholder(variable_name="chat_history", optional=True),
     ("user", "{input}"),
@@ -84,4 +104,16 @@ async def run_agent(user_message: str):
     # ])
     # chat_history_store[session_id] = chat_history[-10:] # 최근 5개의 대화(질문+답변)만 저장
 
-    return result["output"]
+    # return json.loads(result["output"])
+    
+    # 에이전트의 출력에서 ```json ... ``` 부분을 찾습니다.
+    # .은 줄바꿈 문자를 포함하지 않으므로 re.DOTALL 플래그를 사용합니다.
+    match = re.search(r"```json(.*)```", result["output"], re.DOTALL)
+    if match:
+        json_string = match.group(1).strip()
+        # 추출한 JSON 문자열을 파싱합니다.
+        return json.loads(json_string)
+    else:
+        # JSON 형식의 응답이 없을 경우, 에이전트의 일반 문자열을 그대로 반환합니다.
+        # 이 부분은 필요에 따라 다른 방식으로 처리할 수 있습니다.
+        return {"answer": result["output"], "food_name": None, "ingredients": [], "recipe": []}

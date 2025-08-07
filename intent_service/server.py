@@ -56,10 +56,10 @@ async def chat_with_agent(request: Request):
             return {"response": response_data}      # 프런트엔드에 JSON 객체를 그대로 반환
         else:
             # 유튜브 URL이 없으면 기존처럼 에이전트를 실행
-            response_text = await run_agent(user_message)
-            logger.info(f"에이전트 응답: {response_text}")
+            response_json = await run_agent(user_message)
+            logger.info(f"에이전트 응답: {response_json}")
             
-            return {"response": response_text}
+            return {"response": response_json}
 
 
     except Exception as e:

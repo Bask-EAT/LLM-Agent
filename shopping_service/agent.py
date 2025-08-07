@@ -59,6 +59,7 @@ class ShoppingAgent:
                 self._add_assistant_response(response_text)
                 return {
                     "answer": response_text,
+                    "food_name": None,
                     "ingredients": [],
                     "recipe": []
                 }
@@ -70,6 +71,7 @@ class ShoppingAgent:
                 self._add_assistant_response(response_text)
                 return {
                     "answer": response_text,
+                    "food_name": None,
                     "ingredients": result.get("extracted_ingredients", []),
                     "recipe": []
                 }
@@ -88,6 +90,7 @@ class ShoppingAgent:
                     self._add_assistant_response(response_text)
                     return {
                         "answer": response_text,
+                        "food_name": dish,
                         "ingredients": [],
                         "recipe": []
                     }
@@ -110,6 +113,7 @@ class ShoppingAgent:
                     self._add_assistant_response(response_text)
                     return {
                         "answer": response_text,
+                        "food_name": title,
                         "ingredients": ingredients,
                         "recipe": steps
                     }
@@ -130,6 +134,7 @@ class ShoppingAgent:
                 self._add_assistant_response(response_text)
                 return {
                     "answer": response_text,
+                    "food_name": dish,
                     "ingredients": result,
                     "recipe": []
                 }
@@ -150,6 +155,7 @@ class ShoppingAgent:
                 self._add_assistant_response(response_text)
                 return {
                     "answer": response_text,
+                    "food_name": dish,
                     "ingredients": [],
                     "recipe": result
                 }
@@ -159,6 +165,7 @@ class ShoppingAgent:
                 self._add_assistant_response(response_text)
                 return {
                     "answer": response_text,
+                    "food_name": None,
                     "ingredients": [],
                     "recipe": []
                 }
@@ -168,6 +175,7 @@ class ShoppingAgent:
             error_message = "죄송합니다. 처리 중 오류가 발생했습니다. 다시 시도해주세요."
             return {
                 "answer": error_message,
+                "food_name": None,
                 "ingredients": [],
                 "recipe": []
             }
@@ -675,4 +683,5 @@ async def text_based_cooking_assistant(query: str) -> str:
     """
     logger.info(f"텍스트 요리 도우미 실행: {query}")
     result = await shopping_agent.process_message(query)
-    return result['answer']
+    logger.info(f"------shopping_service.process_message에서 만들어진 json으로 결과가 나와야 함 )도우미 응답: {result}")
+    return result
