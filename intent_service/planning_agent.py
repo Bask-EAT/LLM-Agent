@@ -53,6 +53,7 @@ prompt = ChatPromptTemplate.from_messages([
       스스로 계획을 세워 도구들을 순서대로 사용하여 최종 답변을 만드세요.
       1. 먼저 'extract_recipe_from_youtube'로 영상의 핵심 정보를 추출합니다.
       2. 그 다음, 추출된 정보를 바탕으로 'text_based_cooking_assistant'에 추가 질문을 하여 답변을 완성합니다.
+    - **extract_recipe_from_youtube 도구의 결과는 반드시 JSON 형태(food_name, ingredients, steps)를 그대로 반환하세요.**
     - 모든 답변은 친절한 한국어 말투로 정리해서 최종 사용자에게 전달해주세요.
     """),
     MessagesPlaceholder(variable_name="chat_history", optional=True),
@@ -67,20 +68,20 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # 대화 기록을 관리하기 위한 간단한 인메모리 저장소
 chat_history_store = {}
 
-async def run_agent(user_message: str, session_id: str):
+async def run_agent(user_message: str):
     """에이전트를 실행하고 대화 기록을 관리하는 메인 함수"""
-    chat_history = chat_history_store.get(session_id, [])
+    # chat_history = chat_history_store.get(session_id, [])
 
     result = await agent_executor.ainvoke({
         "input": user_message,
-        "chat_history": chat_history
+        # "chat_history": chat_history
     })
     
     # 대화 기록 업데이트
-    chat_history.extend([
-        HumanMessage(content=user_message),
-        AIMessage(content=result["output"]),
-    ])
-    chat_history_store[session_id] = chat_history[-10:] # 최근 5개의 대화(질문+답변)만 저장
+    # chat_history.extend([
+    #     HumanMessage(content=user_message),
+    #     AIMessage(content=result["output"]),
+    # ])
+    # chat_history_store[session_id] = chat_history[-10:] # 최근 5개의 대화(질문+답변)만 저장
 
     return result["output"]

@@ -8,11 +8,5 @@ load_dotenv()
 # API 키를 변수로 저장
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Google Cloud 인증 파일 경로 설정
-# GOOGLE_APPLICATION_CREDENTIALS = os.path.join(
-#     os.path.dirname(__file__), 
-#     "google-credentials.json"
-# )
-
-# 환경 변수로 설정
-# os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GOOGLE_APPLICATION_CREDENTIALS 
+# 🌟 이 줄을 추가하여 GEMINI_API_KEY를 LangChain이 찾는 GOOGLE_API_KEY 환경 변수에 직접 할당합니다.
+os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
