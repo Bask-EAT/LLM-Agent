@@ -33,33 +33,40 @@ def is_youtube_url_request(message: str) -> bool:
 async def chat_with_agent(request: Request):
     """사용자 입력의 의도를 분류"""
     try:
-        # 들어오는 데이터 로깅
-        logger.info(f"요청 헤더: {dict(request.headers)}")
+        # # 들어오는 데이터 로깅
+        # logger.info(f"요청 헤더: {dict(request.headers)}")
         
-        # JSON 데이터 직접 받기
-        body = await request.json()
-        logger.info(f"받은 JSON 데이터: {body}")
+        # # JSON 데이터 직접 받기
+        # body = await request.json()
+        # logger.info(f"받은 JSON 데이터: {body}")
         
-        # youtube_url 또는 message 중 하나를 사용
-        # user_message = body.get("youtube_url") or body.get("message")
-        user_message = body.get("message")
-        logger.info(f"추출된 메시지: {user_message}")
+        # # youtube_url 또는 message 중 하나를 사용
+        # # user_message = body.get("youtube_url") or body.get("message")
+        # user_message = body.get("message")
+        # logger.info(f"추출된 메시지: {user_message}")
         
-        if not user_message:
-            raise HTTPException(status_code=400, detail="message 또는 youtube_url이 필요합니다.")
+        # if not user_message:
+        #     raise HTTPException(status_code=400, detail="message 또는 youtube_url이 필요합니다.")
         
 
-        if is_youtube_url_request(user_message):
-            # 유튜브 URL이 감지되면 VideoAgent Service로 요청 전달
-            response_data = await forward_to_video_service(user_message)    # JSON 객체 반환
-            logger.info(f"VideoAgent Service 직접 호출 결과: {response_data}")
-            return {"response": response_data}      # 프런트엔드에 JSON 객체를 그대로 반환
-        else:
-            # 유튜브 URL이 없으면 기존처럼 에이전트를 실행
-            response_json = await run_agent(user_message)
-            logger.info(f"에이전트 응답: {response_json}")
+        # if is_youtube_url_request(user_message):
+        #     # 유튜브 URL이 감지되면 VideoAgent Service로 요청 전달
+        #     response_data = await forward_to_video_service(user_message)    # JSON 객체 반환
+        #     logger.info(f"VideoAgent Service 직접 호출 결과: {response_data}")
+        #     return {"response": response_data}      # 프런트엔드에 JSON 객체를 그대로 반환
+        # else:
+        #     # 유튜브 URL이 없으면 기존처럼 에이전트를 실행
+        #     response_json = await run_agent(user_message)
+        #     logger.info(f"에이전트 응답: {response_json}")
             
-            return {"response": response_json}
+        #     return {"response": response_json}
+        body = await request.json()
+        user_message = body.get("message") or body.get("youtube_url")
+        if not user_message:
+            raise HTTPException(status_code=400, detail="message 또는 youtube_url이 필요합니다.")
+        # 모든 입력을 Agent에 전달 (Agent가 URL 포함 여부를 판단하고 도구 순서를 결정)
+        response_json = await run_agent(user_message, raw_body=body)
+        return {"response": response_json}
 
 
     except Exception as e:
