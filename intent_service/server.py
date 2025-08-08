@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import logging
-import json
+from fastapi.responses import JSONResponse
 import aiohttp
 from planning_agent import run_agent
 
@@ -61,17 +61,26 @@ async def chat_with_agent(request: Request):
             
         #     return {"response": response_json}
         body = await request.json()
-        user_message = body.get("message") or body.get("youtube_url")
+        user_message = body.get("message")
+
         if not user_message:
-            raise HTTPException(status_code=400, detail="message 또는 youtube_url이 필요합니다.")
+             return JSONResponse(
+                status_code=400,
+                content={"error": "Bad Request", "detail": "message가 필요합니다."}
+            )
         # 모든 입력을 Agent에 전달 (Agent가 URL 포함 여부를 판단하고 도구 순서를 결정)
-        response_json = await run_agent(user_message, raw_body=body)
-        return {"response": response_json}
+        response_data = await run_agent(user_message)
+        logger.info(f"---------에이전트 응답: {response_data}")
+
+        return JSONResponse(content={"response": response_data})
 
 
     except Exception as e:
         logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"서버 내부 오류가 발생했습니다: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal Server Error", "detail": f"서버 내부 오류가 발생했습니다: {e}"}
+        )
 
 
 async def forward_to_video_service(youtube_url: str):
