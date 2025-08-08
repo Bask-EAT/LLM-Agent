@@ -4,13 +4,13 @@ import uvicorn
 import logging
 import json
 import aiohttp
-from classifier import intent_classifier
+from planning_agent import run_agent
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Intent LLM Server", description="사용자 입력 의도 분류 서버")
+app = FastAPI(title="Planning Agent Server", description="모든 사용자 요청을 처리하는 메인 서버")
 
 # CORS 설정 추가
 app.add_middleware(
@@ -24,8 +24,13 @@ app.add_middleware(
 # VideoAgent Service URL
 VIDEO_SERVICE_URL = "http://localhost:8003"
 
-@app.post("/classify")
-async def classify_intent(request: Request):
+# youtube_url을 감지하는 간단한 함수
+def is_youtube_url_request(message: str) -> bool:
+    return "youtube.com" in message or "youtu.be" in message
+
+
+@app.post("/chat")
+async def chat_with_agent(request: Request):
     """사용자 입력의 의도를 분류"""
     try:
         # 들어오는 데이터 로깅
@@ -36,35 +41,31 @@ async def classify_intent(request: Request):
         logger.info(f"받은 JSON 데이터: {body}")
         
         # youtube_url 또는 message 중 하나를 사용
-        user_message = body.get("youtube_url") or body.get("message")
+        # user_message = body.get("youtube_url") or body.get("message")
+        user_message = body.get("message")
         logger.info(f"추출된 메시지: {user_message}")
         
         if not user_message:
             raise HTTPException(status_code=400, detail="message 또는 youtube_url이 필요합니다.")
         
-        result = await intent_classifier.classify_intent(user_message)
-        logger.info(f"classifier 결과: {result}")
-        
-        # 유튜브 링크가 감지된 경우 8003 서버로 전달
-        if result.get("intent") == "VIDEO":
-            logger.info("유튜브 링크 감지됨. VideoAgent Service로 전달합니다.")
-            video_result = await forward_to_video_service(user_message)
-            return {
-                "intent": "VIDEO",
-                "confidence": result.get("confidence", 0.95),
-                "reason": "유튜브 링크가 감지되어 VideoAgent Service에서 처리되었습니다.",
-                "message": user_message,
-                "video_result": video_result
-            }
-        
-        logger.info(f"응답 반환 타입: {type(result)}")
-        return result
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON 파싱 오류: {e}")
-        raise HTTPException(status_code=422, detail="잘못된 JSON 형식입니다.")
+
+        if is_youtube_url_request(user_message):
+            # 유튜브 URL이 감지되면 VideoAgent Service로 요청 전달
+            response_data = await forward_to_video_service(user_message)    # JSON 객체 반환
+            logger.info(f"VideoAgent Service 직접 호출 결과: {response_data}")
+            return {"response": response_data}      # 프런트엔드에 JSON 객체를 그대로 반환
+        else:
+            # 유튜브 URL이 없으면 기존처럼 에이전트를 실행
+            response_json = await run_agent(user_message)
+            logger.info(f"에이전트 응답: {response_json}")
+            
+            return {"response": response_json}
+
+
     except Exception as e:
-        logger.error(f"의도 분류 오류: {e}")
-        raise HTTPException(status_code=500, detail="의도 분류 중 오류가 발생했습니다.")
+        logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"서버 내부 오류가 발생했습니다: {e}")
+
 
 async def forward_to_video_service(youtube_url: str):
     """VideoAgent Service로 유튜브 링크 전달"""

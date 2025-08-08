@@ -7,6 +7,7 @@ from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 import logging
+from config import GEMINI_API_KEY
 
 
 # 다른 파일에 있는 스크립트 추출 함수를 가져옵니다.
@@ -65,7 +66,8 @@ def transcript_node(state: GraphState) -> GraphState:
         return {"error": f"스크립트 추출 중 오류: {e}"}
 
 
-# 새로운 AI 판별 노드를 추가합니다.
+
+# 영상 제목과 스크립트를 기반으로 레시피 영상인지 판단하는 노드
 def recipe_validator_node(state: GraphState) -> GraphState:
     logger.info("--- AI 레시피 판별 노드 실행 ---")
     title = state.get("video_title", "")
@@ -76,7 +78,7 @@ def recipe_validator_node(state: GraphState) -> GraphState:
         return {"error": "스크립트 내용이 너무 짧습니다."}
 
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, google_api_key=GEMINI_API_KEY)
         
         prompt = f"""
         주어진 영상 제목과 스크립트를 보고, 이 영상이 음식을 만들거나 조리하는 방법에 대한 정보를 포함하고 있는지 판단해줘.
@@ -106,9 +108,9 @@ def recipe_validator_node(state: GraphState) -> GraphState:
         return {"error": f"AI 판별 중 오류 발생: {str(e)}"}
 
 
-# 레시피 추출을 담당하는 노드 (Gemini와 연결하는 로직)
+# 레시피 추출을 담당하는 노드
 def recipe_extract_node(state: GraphState) -> GraphState:
-    logger.info("--- 레시피 추출 노드 실행 (구조화된 출력 방식) ---")
+    logger.info("--- 레시피 추출 노드 실행 ---")
     transcript = state.get("transcript")
     video_title = state.get("video_title", "요리명을 추출할 수 없습니다.")
 
@@ -117,7 +119,7 @@ def recipe_extract_node(state: GraphState) -> GraphState:
 
     try:
         # LLM 모델 초기화
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, google_api_key=GEMINI_API_KEY)
 
         # Pydantic 모델(Recipe)을 사용해 구조화된 출력을 요청
         structured_llm = llm.with_structured_output(Recipe)
@@ -140,14 +142,14 @@ def recipe_extract_node(state: GraphState) -> GraphState:
         **중요한 지시사항:**
         1. 재료는 스크립트에서 언급된 모든 재료를 리스트로 정리해주세요.
         2. 조리 순서는 스크립트에서 실제로 언급된 모든 조리 단계를 순서대로 번호를 매겨 정리해주세요.
-        3. 스크립트가 길면 더 많은 조리 단계가 있을 것입니다. 모든 단계를 놓치지 말고 추출해주세요.
+        3. 조리 순서는 **최대 15단계**까지만 생성해주세요.
         4. 각 조리 단계는 구체적이고 실용적인 내용으로 정리해주세요.
         5. 재료의 양이나 구체적인 수치가 언급되었다면 포함해주세요.
         """
 
         # LLM 호출
         recipe_object = structured_llm.invoke(prompt)
-        logger.info("✅ LLM 구조화된 출력 결과:", recipe_object)
+        logger.info(f"✅ LLM 구조화된 출력 결과: {recipe_object}")
 
         # 사용자에게 보여줄 최종 답변을 생성합니다.
         answer = (f"✅ 유튜브 영상에서 '{recipe_object.food_name}' 레시피를 성공적으로 추출했습니다!\n\n"
@@ -207,6 +209,7 @@ def process_video_url(youtube_url: str) -> dict:
         if "error" in result:
             return {
                 "answer": f"영상 처리 중 오류가 발생했습니다: {result['error']}",
+                "food_name": recipe.food_name,
                 "ingredients": [],
                 "recipe": []
             }
@@ -215,12 +218,14 @@ def process_video_url(youtube_url: str) -> dict:
             recipe = result["recipe"]
             return {
                 "answer": f"✅ {recipe.food_name} 레시피를 성공적으로 추출했습니다!\n\n📋 재료: {len(recipe.ingredients)}개\n👨‍🍳 조리 단계: {len(recipe.steps)}단계",
+                "food_name": recipe.food_name,
                 "ingredients": recipe.ingredients,
                 "recipe": recipe.steps
             }
         
         return {
             "answer": "레시피를 추출할 수 없습니다.",
+            "food_name": recipe.food_name,
             "ingredients": [],
             "recipe": []
         }
@@ -251,4 +256,11 @@ def extract_recipe_from_youtube(youtube_url: str) -> str:
     result = app.invoke({"youtube_url": youtube_url})
     
     # 최종 결과 또는 에러 메시지를 반환합니다.
-    return result.get("final_answer") or result.get("error", "알 수 없는 오류가 발생했습니다.")
+    if result.get("error"):
+        return result.get("error")
+    
+    #  Pydantic 객체를 JSON 문자열로 반환
+    if result.get("recipe"):
+        return result["recipe"].model_dump_json()
+    
+    return "알 수 없는 오류가 발생했습니다."

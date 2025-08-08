@@ -44,17 +44,16 @@ class VideoRequest(BaseModel):
 
 class VideoResponse(BaseModel):
     answer: str
+    food_name: str
     ingredients: list
     recipe: list
-    agent_type: str = "video"
 
 @app.post("/process", response_model=VideoResponse)
 async def process_video(request: Request):
     """유튜브 영상 레시피 추출 처리"""
     try:
         # 들어오는 데이터 로깅
-        logger.info(f"=== /process 엔드포인트 호출됨 ===")
-        logger.info(f"요청 헤더: {dict(request.headers)}")
+        logger.info(f"=== 💙video_service에서 /process 엔드포인트 호출됨💙 ===")
         
         # JSON 데이터 직접 받기
         body = await request.json()
