@@ -105,6 +105,69 @@ def build_recipe_object(source: str, payload: dict) -> dict:
         "recipe": recipe_steps if isinstance(recipe_steps, list) else []
     }
 
+def extract_dish_names(message: str) -> list:
+    """메시지에서 여러 요리명을 간단 규칙으로 분리 추출"""
+    import re
+    if not message:
+        return []
+    text = message.strip()
+    # URL 제거
+    text = re.sub(r"https?://\S+", " ", text)
+    # 구분자 통일 (와/과/랑/및/그리고/,+/ 등)
+    text = re.sub(r"\s*(와|과|랑|및|그리고|,|/|\+)\s*", ",", text)
+    # 잡어 제거
+    text = re.sub(r"(레시피|조리법|만드는\s*법|알려줘|주세요|좀)", "", text)
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    # 필터링 및 중복 제거
+    seen = set()
+    results = []
+    for p in parts:
+        if len(p) < 2 or len(p) > 25:
+            continue
+        if p in seen:
+            continue
+        seen.add(p)
+        results.append(p)
+    return results
+
+def extract_requested_count(message: str) -> int:
+    """문장에서 요청 개수(N)를 추출. '3개', '세 가지' 등 지원"""
+    import re
+    if not message:
+        return 0
+    text = message.strip()
+    # 숫자 기반: 3개, 2가지 등
+    m = re.search(r"(\d+)\s*(개|가지)", text)
+    if m:
+        try:
+            return max(0, int(m.group(1)))
+        except Exception:
+            pass
+    # 한글 수사
+    num_map = {
+        "한": 1, "두": 2, "세": 3, "네": 4,
+        "다섯": 5, "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9, "열": 10
+    }
+    for word, val in num_map.items():
+        if re.search(fr"{word}\s*(개|가지)", text):
+            return val
+    return 0
+
+def detect_category(message: str) -> str:
+    """간단 카테고리 감지. 기본 한식"""
+    lower = (message or "").lower()
+    if any(k in message or k in lower for k in ["한식", "korean", "코리안"]):
+        return "한식"
+    if any(k in message or k in lower for k in ["중식", "중국", "차이니즈", "chinese"]):
+        return "중식"
+    if any(k in message or k in lower for k in ["일식", "일본", "japanese", "japan"]):
+        return "일식"
+    if any(k in message or k in lower for k in ["이탈리아", "이탈리아식", "italian", "파스타"]):
+        return "이탈리아식"
+    if any(k in message or k in lower for k in ["미국", "미국식", "american", "버거"]):
+        return "미국식"
+    return "한식"
+
 # youtube_url을 감지하는 간단한 함수
 def is_youtube_url_request(message: str) -> bool:
     return "youtube.com" in message or "youtu.be" in message
@@ -165,18 +228,51 @@ async def chat_with_agent(request: Request):
             except Exception as e:
                 logger.error(f"동시 실행 처리 중 오류: {e}")
         else:
-            # 텍스트만 처리 (개별 예외 무시)
+            # 텍스트 질문: 다요리 분리 + N개 개수 인식 후 병렬 호출
             try:
-                response_text = await forward_to_text_service(user_message)
-                if isinstance(response_text, dict):
-                    recipe_text = build_recipe_object("text", response_text)
-                    recent_results["text"] = recipe_text
-                    if recent_results["first_source"] is None:
-                        recent_results["first_source"] = "text"
-                    recipes.append(recipe_text)
-                    answer = response_text.get("answer", answer)
+                dish_names = extract_dish_names(user_message)
+                requested_n = extract_requested_count(user_message)
+                targets = []
+                if dish_names:
+                    targets = [f"{name} 레시피" for name in dish_names]
+                # 요청 개수가 명시되고 타겟이 부족하면 카테고리 기반으로 보충
+                if requested_n and len(targets) < requested_n:
+                    category = detect_category(user_message)
+                    defaults_by_cat = {
+                        "한식": ["김치찌개", "된장찌개", "비빔밥", "불고기", "잡채"],
+                        "중식": ["짜장면", "짬뽕", "마파두부", "꿔바로우"],
+                        "일식": ["규동", "가츠동", "우동", "야키소바"],
+                        "이탈리아식": ["알리오 올리오", "까르보나라", "마르게리타 피자"],
+                        "미국식": ["치즈버거", "맥앤치즈", "프라이드치킨"]
+                    }
+                    pool = defaults_by_cat.get(category, defaults_by_cat["한식"]) 
+                    for nm in pool:
+                        if len(targets) >= requested_n:
+                            break
+                        if nm not in [t.replace(" 레시피", "") for t in targets]:
+                            targets.append(f"{nm} 레시피")
+
+                if not targets:
+                    targets = [f"{user_message} 레시피"]
+
+                if requested_n:
+                    targets = targets[:requested_n]
+
+                tasks = [asyncio.wait_for(forward_to_text_service(name), timeout=120) for name in targets]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for res in results:
+                    if isinstance(res, dict):
+                        recipe_text = build_recipe_object("text", res)
+                        recent_results["text"] = recipe_text
+                        recipes.append(recipe_text)
+                        if recent_results["first_source"] is None:
+                            recent_results["first_source"] = "text"
+                        if res.get("answer"):
+                            answer = res.get("answer")
+                    else:
+                        logger.error(f"text 병렬 작업 실패: {res}")
             except Exception as e:
-                logger.error(f"text 처리 중 오류: {e}")
+                logger.error(f"text 병렬 처리 중 오류: {e}")
 
         # 2) 통합 응답 조립 (첫 사용 소스가 맨 앞)
         if not recipes:
@@ -191,7 +287,17 @@ async def chat_with_agent(request: Request):
         if not recipes:
             return JSONResponse(status_code=500, content={"error": "No recipes", "detail": "두 소스 모두 처리에 실패했습니다."})
 
-        aggregated = {"answer": answer, "recipes": recipes}
+        # 중복 제거: source+food_name 기준
+        dedup = []
+        seen_keys = set()
+        for r in recipes:
+            key = f"{r.get('source','')}|{r.get('food_name','')}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            dedup.append(r)
+
+        aggregated = {"answer": answer, "recipes": dedup}
         return JSONResponse(content={"response": aggregated})
 
 

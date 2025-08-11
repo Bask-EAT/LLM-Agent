@@ -367,7 +367,20 @@ class TextAgent:
         
         try:
             resp = self.model.generate_content(prompt)
-            dish = resp.text.strip()
+            dish_raw = resp.text.strip()
+            # 여러 개가 나오는 경우(줄바꿈/쉼표/연결 어미) 첫 번째로 적합한 하나만 선택
+            import re
+            candidates = [
+                c.strip() for c in re.split(r"[\n,/]|\s*(?:와|과|랑|그리고|및)\s*", dish_raw)
+                if c and len(c.strip()) < 50
+            ]
+            # 입력 메시지와 가장 유사한 후보를 선택
+            if candidates:
+                matched = next((c for c in candidates if c and c in message), None)
+                chosen = matched or candidates[0]
+            else:
+                chosen = dish_raw
+            dish = chosen.strip()
             return dish if dish and len(dish) < 50 else ""
         except Exception as e:
             logger.error(f"LLM 요리명 추출 오류: {e}")
@@ -735,7 +748,7 @@ class TextAgent:
         당신은 세계적으로 유명한 프로 셰프입니다.
         Pierre Koffmann(프랑스), Gordon Ramsay(미국식), Ken Hom(중식), Massimo Bottura(이탈리아), José Andrés(스페인식), Yotam Ottolenghi(지중해식), 강레오(한식), 안성재(한식) 셰프의 경험을 바탕으로 정확한 레시피를 제공합니다.
         
-        '{dish}' 레시피를 JSON으로 작성하세요:
+        '{dish}' 레시피를 JSON으로 작성하세요. '{dish}'가 요리명이 아닐 경우, 메시지 전체에서 가장 가능성이 높은 **단일 요리명 1개**를 추론해 그 레시피만 작성하세요:
         - 조리법은 최대 15단계 이하로 작성
         - 복잡한 과정은 요약해서 핵심만 포함
         - 정확한 재료와 실용적인 조리법 제공
@@ -782,7 +795,7 @@ class TextAgent:
         당신은 세계적으로 유명한 프로 셰프입니다.
         Pierre Koffmann(프랑스), Gordon Ramsay(미국식), Ken Hom(중식), Massimo Bottura(이탈리아), José Andrés(스페인식), Yotam Ottolenghi(지중해식), 강레오(한식), 안성재(한식) 셰프의 전문 지식을 바탕으로 정확한 재료 정보를 제공합니다.
         
-        '{dish}'에 필요한 정확한 재료와 양을 JSON 객체 배열로만 출력하세요.
+        '{dish}'에 필요한 정확한 재료와 양을 JSON 객체 배열로만 출력하세요. '{dish}'가 애매하면 메시지에서 가장 가능성이 높은 **단일 요리명 1개**를 추론해 그 재료만 출력하세요.
         각 원소는 다음 형식의 객체여야 합니다: {{"item": 재료명만, "amount": 숫자만, "unit": 단위만}}
         - item: 수식어/브랜드/원산지/손질 상태를 제외한 재료명만
         - amount: 수량 숫자만(정수/소수/분수). 불명확하면 빈 문자열
