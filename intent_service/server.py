@@ -203,12 +203,9 @@ async def chat_with_agent(request: Request):
         recipes = []
         answer = "요청하신 레시피를 정리했습니다."
         if current_source == "video":
-            # 두 작업을 동시에 실행하여 전체 응답 시간을 단축
+            # 유튜브 링크만 있을 때는 Video 서비스만 호출 (텍스트 호출 금지)
             try:
-                video_task = asyncio.wait_for(forward_to_video_service(user_message), timeout=180)
-                text_task = asyncio.wait_for(forward_to_text_service(user_message), timeout=180)
-                video_res, text_res = await asyncio.gather(video_task, text_task, return_exceptions=True)
-
+                video_res = await asyncio.wait_for(forward_to_video_service(user_message), timeout=240)
                 if isinstance(video_res, dict):
                     recipe_video = build_recipe_object("video", video_res)
                     recent_results["video"] = recipe_video
@@ -218,15 +215,8 @@ async def chat_with_agent(request: Request):
                     answer = video_res.get("answer", answer)
                 else:
                     logger.error(f"video 작업 실패: {video_res}")
-
-                if isinstance(text_res, dict):
-                    recipe_text = build_recipe_object("text", text_res)
-                    recent_results["text"] = recipe_text
-                    recipes.append(recipe_text)
-                else:
-                    logger.error(f"text 작업 실패: {text_res}")
             except Exception as e:
-                logger.error(f"동시 실행 처리 중 오류: {e}")
+                logger.error(f"Video 처리 중 오류: {e}")
         else:
             # 텍스트 질문: 다요리 분리 + N개 개수 인식 후 병렬 호출
             try:
@@ -258,7 +248,8 @@ async def chat_with_agent(request: Request):
                 if requested_n:
                     targets = targets[:requested_n]
 
-                tasks = [asyncio.wait_for(forward_to_text_service(name), timeout=120) for name in targets]
+                # 텍스트 병렬 호출 (하나라도 성공하면 즉시 부분 응답을 반환하도록 timeout을 낮추고 결과를 필터)
+                tasks = [asyncio.wait_for(forward_to_text_service(name), timeout=90) for name in targets]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 for res in results:
                     if isinstance(res, dict):
@@ -283,9 +274,9 @@ async def chat_with_agent(request: Request):
             if recent_results.get(other):
                 recipes.append(recent_results[other])
 
-        # 둘 다 실패했으면 500 반환
+        # 결과가 없으면 204로 응답해 프론트에서 재시도 유도(스피너 유지 방지)
         if not recipes:
-            return JSONResponse(status_code=500, content={"error": "No recipes", "detail": "두 소스 모두 처리에 실패했습니다."})
+            return JSONResponse(status_code=204, content={"response": {"answer": "", "recipes": []}})
 
         # 중복 제거: source+food_name 기준
         dedup = []
