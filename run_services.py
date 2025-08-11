@@ -39,8 +39,8 @@ def main():
             "port": 8001
         },
         {
-            "name": "ShoppingAgent Service", 
-            "path": "shopping_service",
+            "name": "TextAgent Service", 
+            "path": "text_service",
             "port": 8002
         },
         {
@@ -64,7 +64,7 @@ def main():
         print("🎉 모든 서비스가 시작되었습니다!")
         print("\n📋 서비스 정보:")
         print("• Intent LLM Service: http://localhost:8001")
-        print("• ShoppingAgent Service: http://localhost:8002")
+        print("• TextAgent Service: http://localhost:8002")
         print("• VideoAgent Service: http://localhost:8003")
         print("\n💡 메인 앱 실행: cd main_app && python app.py")
         print("💡 서비스 중지: Ctrl+C")

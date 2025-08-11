@@ -57,6 +57,7 @@ def transcript_node(state: GraphState) -> GraphState:
 
         if not transcript_text or len(transcript_text.strip()) < 10:
             logger.warning("WARN: 스크립트가 없거나 너무 짧음")
+            # 스크립트가 없으면 뒤의 비디오 분석 노드로 우회하도록 에러만 표기
             return {"error": "스크립트를 추출할 수 없습니다. (자막/음성 없음 또는 너무 짧음)"}
         logger.info(f"INFO: 스크립트 일부 미리보기: {transcript_text[:100]}...")
         return {"transcript": transcript_text}
@@ -106,6 +107,47 @@ def recipe_validator_node(state: GraphState) -> GraphState:
     except Exception as e:
         logger.error(f"❌ AI 판별 중 오류: {e}")
         return {"error": f"AI 판별 중 오류 발생: {str(e)}"}
+
+
+# 스크립트가 전혀 없을 때, 비디오 자체를 Gemini로 분석하여 레시피를 추출하는 노드
+def video_analyzer_node(state: GraphState) -> GraphState:
+    logger.info("--- 비디오 직접 분석 노드 실행 (Gemini Video Understanding) ---")
+    youtube_url = state.get("youtube_url", "")
+    video_title = state.get("video_title", "요리명을 추출할 수 없습니다.")
+
+    if not youtube_url:
+        return {"error": "유튜브 URL이 없습니다."}
+
+    try:
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, google_api_key=GEMINI_API_KEY)
+        structured_llm = llm.with_structured_output(Recipe)
+
+        prompt = f"""
+        다음 유튜브 영상(링크)을 직접 분석하여 레시피를 추출해 주세요.
+        링크: {youtube_url}
+
+        지시사항:
+        - 영상의 시각/음성 정보를 모두 활용하여 실제로 등장하는 재료와 조리 과정을 정확히 추출하세요.
+        - 재료는 영상에서 언급/표시된 모든 재료를 포함하고, 가능한 경우 양/단위를 함께 적으세요.
+        - 조리 단계는 영상 흐름 순서대로 구체적이고 실용적으로 15단계 이내로 정리하세요.
+        - 영상 제목이 요리명을 명확히 나타내면 그 이름을 사용하고, 아니면 영상 내용을 바탕으로 자연스러운 요리명을 생성하세요.
+        - 출력은 Pydantic 스키마(Recipe: food_name, ingredients: List[str], steps: List[str])에 맞게만 반환하세요.
+        """
+
+        recipe_object = structured_llm.invoke(prompt)
+        logger.info(f"✅ 비디오 분석 기반 레시피 추출 결과: {recipe_object}")
+
+        answer = (
+            f"✅ 유튜브 영상에서 '{recipe_object.food_name}' 레시피를 성공적으로 추출했습니다!\n\n"
+            f"📋 **필요한 재료:**\n- " + "\n- ".join(recipe_object.ingredients) + "\n\n"
+            f"👨‍🍳 **조리법:**\n" + "\n".join(f"{i+1}. {step}" for i, step in enumerate(recipe_object.steps))
+        )
+
+        return {"recipe": recipe_object, "final_answer": answer}
+
+    except Exception as e:
+        logger.error(f"비디오 직접 분석 오류: {e}")
+        return {"error": f"비디오 직접 분석 중 오류 발생: {str(e)}"}
 
 
 # 레시피 추출을 담당하는 노드
@@ -176,18 +218,35 @@ def create_recipe_graph():
     workflow.add_node("title_extractor", title_node)
     workflow.add_node("transcriber", transcript_node)
     workflow.add_node("validator", recipe_validator_node)  # 판별 노드 추가
+    workflow.add_node("video_analyzer", video_analyzer_node)  # 비디오 직접 분석 노드 추가
     workflow.add_node("extractor", recipe_extract_node)
     
     workflow.set_entry_point("title_extractor")
     workflow.add_edge("title_extractor", "transcriber")
-    workflow.add_edge("transcriber", "validator") # transcriber 다음에 validator 실행
+
+    # transcriber 결과에 따라: 스크립트가 있으면 validator로, 없으면 비디오 직접 분석으로
+    def route_after_transcriber(state: GraphState) -> str:
+        return "validator" if state.get("transcript") and not state.get("error") else "video_analyzer"
+
+    workflow.add_conditional_edges("transcriber", route_after_transcriber, {
+        "validator": "validator",
+        "video_analyzer": "video_analyzer",
+    })
 
     # validator 결과에 따라 분기 처리
-    def should_continue(state: GraphState) -> str:
+    def should_continue_after_validator(state: GraphState) -> str:
         return "extractor" if not state.get("error") else END
 
-    workflow.add_conditional_edges("validator", should_continue, {
+    workflow.add_conditional_edges("validator", should_continue_after_validator, {
         "extractor": "extractor",
+        END: END
+    })
+
+    # 비디오 직접 분석 노드 이후에는 종료
+    def finish_after_video_analyzer(state: GraphState) -> str:
+        return END if state.get("recipe") or state.get("error") else END
+
+    workflow.add_conditional_edges("video_analyzer", finish_after_video_analyzer, {
         END: END
     })
     workflow.add_edge("extractor", END)
@@ -209,7 +268,7 @@ def process_video_url(youtube_url: str) -> dict:
         if "error" in result:
             return {
                 "answer": f"영상 처리 중 오류가 발생했습니다: {result['error']}",
-                "food_name": recipe.food_name,
+                "food_name": (result.get("recipe").food_name if result.get("recipe") else result.get("video_title", "")),
                 "ingredients": [],
                 "recipe": []
             }
@@ -225,7 +284,7 @@ def process_video_url(youtube_url: str) -> dict:
         
         return {
             "answer": "레시피를 추출할 수 없습니다.",
-            "food_name": recipe.food_name,
+            "food_name": result.get("video_title", ""),
             "ingredients": [],
             "recipe": []
         }
