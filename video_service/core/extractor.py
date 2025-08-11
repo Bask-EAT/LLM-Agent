@@ -138,9 +138,7 @@ def video_analyzer_node(state: GraphState) -> GraphState:
         logger.info(f"✅ 비디오 분석 기반 레시피 추출 결과: {recipe_object}")
 
         answer = (
-            f"✅ 유튜브 영상에서 '{recipe_object.food_name}' 레시피를 성공적으로 추출했습니다!\n\n"
-            f"📋 **필요한 재료:**\n- " + "\n- ".join(recipe_object.ingredients) + "\n\n"
-            f"👨‍🍳 **조리법:**\n" + "\n".join(f"{i+1}. {step}" for i, step in enumerate(recipe_object.steps))
+            f"✅ 유튜브 영상에서 '{recipe_object.food_name}' 레시피를 성공적으로 추출했습니다!"
         )
 
         return {"recipe": recipe_object, "final_answer": answer}
@@ -194,9 +192,7 @@ def recipe_extract_node(state: GraphState) -> GraphState:
         logger.info(f"✅ LLM 구조화된 출력 결과: {recipe_object}")
 
         # 사용자에게 보여줄 최종 답변을 생성합니다.
-        answer = (f"✅ 유튜브 영상에서 '{recipe_object.food_name}' 레시피를 성공적으로 추출했습니다!\n\n"
-                  f"📋 **필요한 재료:**\n- " + "\n- ".join(recipe_object.ingredients) + "\n\n"
-                  f"👨‍🍳 **조리법:**\n" + "\n".join(f"{i+1}. {step}" for i, step in enumerate(recipe_object.steps)))
+        answer = (f"✅ 유튜브 영상에서 '{recipe_object.food_name}' 레시피를 성공적으로 추출했습니다!")
 
         # Pydantic 객체를 state에 저장
         return {"recipe": recipe_object, "final_answer" : answer}
