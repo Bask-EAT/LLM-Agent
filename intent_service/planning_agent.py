@@ -30,7 +30,7 @@ project_root = os.path.dirname(current_dir)
 sys.path.append(project_root)
 
 # 위에서 수정한 파일들로부터 '도구'들을 가져옵니다.
-from shopping_service.agent import text_based_cooking_assistant
+from text_service.agent import text_based_cooking_assistant
 from video_service.core.extractor import extract_recipe_from_youtube
 
 # 1. 사용할 도구(Tools) 정의

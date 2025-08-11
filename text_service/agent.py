@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class ShoppingAgent:
+class TextAgent:
     def __init__(self):
         self.model = genai.GenerativeModel("gemini-1.5-flash")
         self.conversation_history = []
@@ -670,8 +670,8 @@ class ShoppingAgent:
         return tips if tips else ["조리 팁을 찾을 수 없습니다"]
 
 
-# ShoppingAgent 인스턴스 생성
-shopping_agent = ShoppingAgent()
+# TextAgent 인스턴스 생성
+text_agent = TextAgent()
 
 @tool
 async def text_based_cooking_assistant(query: str) -> str:
@@ -682,6 +682,6 @@ async def text_based_cooking_assistant(query: str) -> str:
     사용자의 질문을 그대로 입력값으로 사용하세요.
     """
     logger.info(f"텍스트 요리 도우미 실행: {query}")
-    result = await shopping_agent.process_message(query)
+    result = await text_agent.process_message(query)
     logger.info(f"------shopping_service.process_message에서 만들어진 json으로 결과가 나와야 함 )도우미 응답: {result}")
     return result

@@ -18,10 +18,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Pydantic 모델 정의
+class Ingredient(BaseModel):
+    item: str = Field(description="재료 이름")
+    amount: str = Field(description="재료의 양")
+    unit: str = Field(description="재료의 단위 (예: g, ml, 큰술, 개)")
+
 class Recipe(BaseModel):
     food_name: str = Field(description="요리 이름")
-    ingredients: List[str] = Field(description="요리에 필요한 재료 목록 (양 포함)")
-    steps: List[str] = Field(description="조리 과정을 순서대로 요약한 목록")
+    ingredients: List[Ingredient] = Field(description="요리에 필요한 재료 목록 (양 포함)")
+    recipe: List[str] = Field(description="조리 과정을 순서대로 요약한 목록. 'steps'가 아닌 'recipe' 키를 사용해야 합니다.")
 
 class GraphState(TypedDict):
     youtube_url: str
@@ -129,7 +134,7 @@ def recipe_extract_node(state: GraphState) -> GraphState:
         당신은 요리 레시피 전문가입니다. 주어진 유튜브 영상 제목과 스크립트를 바탕으로 레시피를 추출해주세요.
 
         - 스크립트에서 언급된 모든 재료를 ingredients 목록에 추가하세요.
-        - 스크립트의 조리 과정을 순서대로 steps 목록에 추가하세요.
+        - 스크립트의 조리 과정을 순서대로 recipe 목록에 추가하세요.
 
         [영상 제목]
         {video_title}
@@ -140,11 +145,11 @@ def recipe_extract_node(state: GraphState) -> GraphState:
         위 스크립트에서 요리의 재료와 조리 순서를 정확하게 추출해주세요.
 
         **중요한 지시사항:**
-        1. 재료는 스크립트에서 언급된 모든 재료를 리스트로 정리해주세요.
+        1. 재료는 스크립트에서 언급된 모든 재료를 리스트로 정리해주세요. 각 객체는 **item**, **amount**, **unit** 키를 포함해야 합니다.
         2. 조리 순서는 스크립트에서 실제로 언급된 모든 조리 단계를 순서대로 번호를 매겨 정리해주세요.
         3. 조리 순서는 **최대 15단계**까지만 생성해주세요.
         4. 각 조리 단계는 구체적이고 실용적인 내용으로 정리해주세요.
-        5. 재료의 양이나 구체적인 수치가 언급되었다면 포함해주세요.
+        5. 재료의 양이나 구체적인 수치가 언급되었다면 반드시 amount와 unit에 포함해주세요. 양이 불명확하면 '적당량', '약간' 등으로 표시하세요.
         """
 
         # LLM 호출
@@ -152,12 +157,16 @@ def recipe_extract_node(state: GraphState) -> GraphState:
         logger.info(f"✅ LLM 구조화된 출력 결과: {recipe_object}")
 
         # 사용자에게 보여줄 최종 답변을 생성합니다.
+        ingredient_list_str = [
+            f"{ing.item} {ing.amount} {ing.unit}".strip()
+            for ing in recipe_object.ingredients
+        ]
         answer = (f"✅ 유튜브 영상에서 '{recipe_object.food_name}' 레시피를 성공적으로 추출했습니다!\n\n"
-                  f"📋 **필요한 재료:**\n- " + "\n- ".join(recipe_object.ingredients) + "\n\n"
-                  f"👨‍🍳 **조리법:**\n" + "\n".join(f"{i+1}. {step}" for i, step in enumerate(recipe_object.steps)))
+                  f"📋 **필요한 재료:**\n- " + "\n- ".join(ingredient_list_str) + "\n\n"
+                  f"👨‍🍳 **조리법:**\n" + "\n".join(f"{i+1}. {step}" for i, step in enumerate(recipe_object.recipe)))
 
         # Pydantic 객체를 state에 저장
-        return {"recipe": recipe_object, "final_answer" : answer}
+        return {"recipe": recipe_object, "final_answer": answer}
         
     except Exception as e:
         logger.error(f"레시피 추출 오류: {e}")
@@ -217,10 +226,10 @@ def process_video_url(youtube_url: str) -> dict:
         if "recipe" in result:
             recipe = result["recipe"]
             return {
-                "answer": f"✅ {recipe.food_name} 레시피를 성공적으로 추출했습니다!\n\n📋 재료: {len(recipe.ingredients)}개\n👨‍🍳 조리 단계: {len(recipe.steps)}단계",
+                "answer": f"✅ {recipe.food_name} 레시피를 성공적으로 추출했습니다!\n\n📋 재료: {len(recipe.ingredients)}개\n👨‍🍳 조리 단계: {len(recipe.recipe)}단계",
                 "food_name": recipe.food_name,
                 "ingredients": recipe.ingredients,
-                "recipe": recipe.steps
+                "recipe": recipe.recipe
             }
         
         return {

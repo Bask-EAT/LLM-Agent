@@ -5,7 +5,7 @@
 ## 🚀 주요 기능
 
 - **Intent LLM**: 사용자 입력을 분석하여 텍스트 검색과 비디오 분석을 자동 분류
-- **텍스트 기반 레시피 검색**: ShoppingAgent를 통한 레시피, 재료, 조리 팁 검색
+- **텍스트 기반 레시피 검색**: TextAgent 통한 레시피, 재료, 조리 팁 검색
 - **유튜브 영상 레시피 추출**: VideoAgent를 통한 유튜브 링크에서 레시피 자동 추출
 - **통합 채팅 인터페이스**: 하나의 채팅창에서 모든 기능 사용 가능
 - **실시간 채팅**: WebSocket을 통한 실시간 대화
@@ -58,7 +58,7 @@ dev2/
 ├── app.py                 # FastAPI 메인 애플리케이션
 ├── integrated_agent.py    # 통합 에이전트 (Intent 분류 및 Agent 선택)
 ├── intent_classifier.py   # Intent LLM (사용자 입력 분류)
-├── shopping_agent.py      # 텍스트 기반 레시피 검색 에이전트
+├── text_agent.py      # 텍스트 기반 레시피 검색 에이전트
 ├── video_agent.py         # 유튜브 영상 레시피 추출 에이전트
 ├── config.py             # 설정 관리
 ├── requirements.txt      # Python 의존성
@@ -81,7 +81,7 @@ dev2/
 - **텍스트 입력**: "김치찌개 레시피 알려줘", "계란볶음밥 재료"
 - **유튜브 링크**: "https://youtube.com/watch?v=...", "이 영상에서 레시피 추출해줘"
 
-### 2. ShoppingAgent (텍스트 기반 레시피 검색)
+### 2. TextAgent (텍스트 기반 레시피 검색)
 
 - **레시피 검색**: 요리명으로 레시피 조회
 - **재료 검색**: 특정 요리의 재료 목록
