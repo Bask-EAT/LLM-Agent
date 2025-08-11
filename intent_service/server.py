@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import logging
-import json
+from fastapi.responses import JSONResponse
 import aiohttp
 from planning_agent import run_agent
 
@@ -21,9 +21,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Service URLs
+# VideoAgent Service URL
 VIDEO_SERVICE_URL = "http://localhost:8003"
-TEXT_SERVICE_URL = "http://localhost:8002"
 
 # youtube_url을 감지하는 간단한 함수
 def is_youtube_url_request(message: str) -> bool:
@@ -34,45 +33,54 @@ def is_youtube_url_request(message: str) -> bool:
 async def chat_with_agent(request: Request):
     """사용자 입력의 의도를 분류"""
     try:
-        # 들어오는 데이터 로깅
-        logger.info(f"요청 헤더: {dict(request.headers)}")
+        # # 들어오는 데이터 로깅
+        # logger.info(f"요청 헤더: {dict(request.headers)}")
         
-        # JSON 데이터 직접 받기
-        body = await request.json()
-        logger.info(f"받은 JSON 데이터: {body}")
-        
-        # youtube_url 또는 message 중 하나를 사용
-        # user_message = body.get("youtube_url") or body.get("message")
-        user_message = body.get("message")
-        logger.info(f"추출된 메시지: {user_message}")
-        
-        if not user_message:
-            raise HTTPException(status_code=400, detail="message 또는 youtube_url이 필요합니다.")
-        
-
-        if is_youtube_url_request(user_message):
-            # 유튜브 URL이 감지되면 VideoAgent Service로 요청 전달
-            response_data = await forward_to_video_service(user_message)    # JSON 객체 반환
-            logger.info(f"VideoAgent Service 직접 호출 결과: {response_data}")
-            return {"response": response_data}      # 프런트엔드에 JSON 객체를 그대로 반환
-        else:
-            # 유튜브 URL이 없으면 기존처럼 에이전트를 실행
-            response_json = await run_agent(user_message)
-            logger.info(f"에이전트 응답: {response_json}")
-            
-            return {"response": response_json}
+        # # JSON 데이터 직접 받기
         # body = await request.json()
-        # user_message = body.get("message") or body.get("youtube_url")
+        # logger.info(f"받은 JSON 데이터: {body}")
+        
+        # # youtube_url 또는 message 중 하나를 사용
+        # # user_message = body.get("youtube_url") or body.get("message")
+        # user_message = body.get("message")
+        # logger.info(f"추출된 메시지: {user_message}")
+        
         # if not user_message:
         #     raise HTTPException(status_code=400, detail="message 또는 youtube_url이 필요합니다.")
-        # # 모든 입력을 Agent에 전달 (Agent가 URL 포함 여부를 판단하고 도구 순서를 결정)
-        # response_json = await run_agent(user_message, raw_body=body)
-        # return {"response": response_json}
+        
+
+        # if is_youtube_url_request(user_message):
+        #     # 유튜브 URL이 감지되면 VideoAgent Service로 요청 전달
+        #     response_data = await forward_to_video_service(user_message)    # JSON 객체 반환
+        #     logger.info(f"VideoAgent Service 직접 호출 결과: {response_data}")
+        #     return {"response": response_data}      # 프런트엔드에 JSON 객체를 그대로 반환
+        # else:
+        #     # 유튜브 URL이 없으면 기존처럼 에이전트를 실행
+        #     response_json = await run_agent(user_message)
+        #     logger.info(f"에이전트 응답: {response_json}")
+            
+        #     return {"response": response_json}
+        body = await request.json()
+        user_message = body.get("message")
+
+        if not user_message:
+             return JSONResponse(
+                status_code=400,
+                content={"error": "Bad Request", "detail": "message가 필요합니다."}
+            )
+        # 모든 입력을 Agent에 전달 (Agent가 URL 포함 여부를 판단하고 도구 순서를 결정)
+        response_data = await run_agent(user_message)
+        logger.info(f"---------에이전트 응답: {response_data}")
+
+        return JSONResponse(content={"response": response_data})
 
 
     except Exception as e:
         logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"서버 내부 오류가 발생했습니다: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal Server Error", "detail": f"서버 내부 오류가 발생했습니다: {e}"}
+        )
 
 
 async def forward_to_video_service(youtube_url: str):
