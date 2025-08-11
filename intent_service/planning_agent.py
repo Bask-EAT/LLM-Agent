@@ -38,7 +38,7 @@ tools = [text_based_cooking_assistant, extract_recipe_from_youtube]
 
 # 2. LLM 모델 설정 (Planning을 위해서는 고성능 모델을 추천합니다)
 llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-pro-latest", 
+    model="gemini-2.5-flash", 
     temperature=0, 
     convert_system_message_to_human=True,
     google_api_key=GEMINI_API_KEY,

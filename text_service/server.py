@@ -28,10 +28,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class ShoppingRequest(BaseModel):
+class TextRequest(BaseModel):
     message: str
 
-class ShoppingResponse(BaseModel):
+class TextResponse(BaseModel):
     answer: str
     ingredients: list
     recipe: list
@@ -83,17 +83,17 @@ class ShoppingResponse(BaseModel):
 #         logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True)
 #         raise HTTPException(status_code=500, detail=f"서버 내부 오류가 발생했습니다: {e}")
 
-@app.post("/process", response_model=ShoppingResponse)
-async def process_message(request: ShoppingRequest):
+@app.post("/process", response_model=TextResponse)
+async def process_message(request: TextRequest):
     """텍스트 기반 레시피 검색 처리"""
     try:
-        logger.info(f"=== 💛shopping_service에서 /process 엔드포인트 호출됨💛 ===")
+        logger.info(f"=== 💛text_service에서 /process 엔드포인트 호출됨💛 ===")
         logger.info(f"처리할 메시지: {request.message}")
         
         result = await text_agent.process_message(request.message)
         logger.info(f"TextAgent 처리 결과: {result}")
         
-        return ShoppingResponse(**result)
+        return TextResponse(**result)
     except Exception as e:
         logger.error(f"TextAgent 처리 오류: {e}")
         raise HTTPException(status_code=500, detail="레시피 검색 중 오류가 발생했습니다.")

@@ -40,7 +40,11 @@ def main():
         },
         {
             "name": "TextAgent Service", 
+<<<<<<< HEAD
             "path": "shopping_service",
+=======
+            "path": "text_service",
+>>>>>>> origin/main
             "port": 8002
         },
         {
