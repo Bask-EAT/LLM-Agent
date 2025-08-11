@@ -133,10 +133,12 @@ class TextAgent:
                     response_text += "\n👨‍🍳 [조리법]\n"
                     for i, step in enumerate(steps, 1):
                         response_text += f"{i}. {step}\n"
+
+                    simple_answer = f"네. {title}의 레시피를 알려드릴게요."
                     
                     self._add_assistant_response(response_text)
                     return {
-                        "answer": response_text,
+                        "answer": simple_answer,
                         "food_name": title,
                         "ingredients": ingredients,
                         "recipe": steps

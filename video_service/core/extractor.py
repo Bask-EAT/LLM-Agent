@@ -272,7 +272,7 @@ def process_video_url(youtube_url: str) -> dict:
         if "recipe" in result:
             recipe = result["recipe"]
             return {
-                "answer": f"✅ {recipe.food_name} 레시피를 성공적으로 추출했습니다!\n\n📋 재료: {len(recipe.ingredients)}개\n👨‍🍳 조리 단계: {len(recipe.steps)}단계",
+                "answer": f"✅ {recipe.food_name} 레시피를 성공적으로 추출했습니다!",
                 "food_name": recipe.food_name,
                 "ingredients": recipe.ingredients,
                 "recipe": recipe.steps
