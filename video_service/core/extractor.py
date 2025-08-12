@@ -8,6 +8,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 import logging
 from config import GEMINI_API_KEY
+import json
 
 
 # 다른 파일에 있는 스크립트 추출 함수를 가져옵니다.
@@ -30,6 +31,76 @@ class GraphState(TypedDict):
     recipe: Recipe
     error: str
     final_answer: str
+
+
+# 재료 문자열을 정규화하는 함수
+def normalize_ingredient_string(raw: str):
+    """문자열 재료를 {item, amount, unit}로 최대한 보수적으로 정규화"""
+    import re
+    text = (raw or "").strip()
+    if not text:
+        return {"item": "", "amount": "", "unit": ""}
+
+    # 1) 콜론 구분: "식용유: 5큰술" / "소고기: 200 g"
+    m_colon = re.match(r"^(.+?)\s*[:：]\s*(.+)$", text)
+    if m_colon:
+        item = m_colon.group(1).strip()
+        rhs = m_colon.group(2).strip()
+        # 숫자+단위 붙어있는 형태 포함: 5큰술, 200g, 1/4통
+        m_q = re.match(r"^(\d+[\./,]?\d*)\s*([가-힣A-Za-z%]+)$", rhs)
+        if m_q:
+            return {"item": item, "amount": m_q.group(1), "unit": m_q.group(2)}
+        # 약간/적당량 등
+        return {"item": item, "amount": rhs, "unit": ""}
+
+    # 2) 괄호 수량: "올리브유 (3큰술)"
+    m_paren = re.match(r"^(.+?)\s*\(([^)]+)\)$", text)
+    if m_paren:
+        item = m_paren.group(1).strip()
+        qty = m_paren.group(2).strip()
+        m_q = re.match(r"^(\d+[\./,]?\d*)\s*([가-힣A-Za-z%]+)$", qty)
+        if m_q:
+            return {"item": item, "amount": m_q.group(1), "unit": m_q.group(2)}
+        return {"item": item, "amount": qty, "unit": ""}
+
+    # 3) 공백 구분: "새우 10 마리" 또는 붙은 단위: "10마리", "200g", "1/4통"
+    m_space = re.match(r"^([가-힣A-Za-z\s]+?)\s*(\d+[\./,]?\d*)\s*([가-힣A-Za-z%]+)?$", text)
+    if m_space:
+        item = m_space.group(1).strip()
+        amount = (m_space.group(2) or "").strip()
+        unit = (m_space.group(3) or "").strip()
+        return {"item": item, "amount": amount, "unit": unit}
+
+    # 4) 단독 항목
+    return {"item": text, "amount": "", "unit": ""}
+
+
+# 레시피 객체를 생성하는 함수
+def build_recipe_object(source: str, payload: dict) -> dict:
+    food_name = payload.get("food_name") or payload.get("title") or ""
+    ingredients_raw = payload.get("ingredients", [])
+    recipe_steps = payload.get("recipe") or payload.get("steps") or []
+    if isinstance(ingredients_raw, list):
+        structured = []
+        for ing in ingredients_raw:
+            if isinstance(ing, dict) and {"item", "amount", "unit"}.issubset(ing.keys()):
+                structured.append({
+                    "item": str(ing.get("item", "")),
+                    "amount": str(ing.get("amount", "")),
+                    "unit": str(ing.get("unit", ""))
+                })
+            elif isinstance(ing, str):
+                structured.append(normalize_ingredient_string(ing))
+        ingredients = structured
+    else:
+        ingredients = []
+    return {
+        "source": source,
+        "food_name": food_name,
+        "ingredients": ingredients,
+        "recipe": recipe_steps if isinstance(recipe_steps, list) else []
+    }
+
 
 
 # 영상 제목 추출을 담당하는 노드
@@ -55,10 +126,10 @@ def transcript_node(state: GraphState) -> GraphState:
         transcript_text = get_youtube_transcript(state["youtube_url"])
         logger.debug(f"DEBUG: 추출된 스크립트 길이: {len(transcript_text) if transcript_text else 0}")
 
-        if not transcript_text or len(transcript_text.strip()) < 10:
-            logger.warning("WARN: 스크립트가 없거나 너무 짧음")
-            # 스크립트가 없으면 뒤의 비디오 분석 노드로 우회하도록 에러만 표기
-            return {"error": "스크립트를 추출할 수 없습니다. (자막/음성 없음 또는 너무 짧음)"}
+        # if not transcript_text or len(transcript_text.strip()) < 10:
+        #     logger.warning("WARN: 스크립트가 없거나 너무 짧음")
+        #     # 스크립트가 없으면 뒤의 비디오 분석 노드로 우회하도록 에러만 표기
+        #     return {"error": "스크립트를 추출할 수 없습니다. (자막/음성 없음 또는 너무 짧음)"}
         logger.info(f"INFO: 스크립트 일부 미리보기: {transcript_text[:100]}...")
         return {"transcript": transcript_text}
     
@@ -75,8 +146,8 @@ def recipe_validator_node(state: GraphState) -> GraphState:
     transcript = state.get("transcript", "")
     
     # 내용이 너무 짧으면 처리하지 않음
-    if len(transcript) < 50:
-        return {"error": "스크립트 내용이 너무 짧습니다."}
+    # if len(transcript) < 50:
+    #     return {"error": "스크립트 내용이 너무 짧습니다."}
 
     try:
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0, google_api_key=GEMINI_API_KEY)
@@ -295,27 +366,83 @@ def process_video_url(youtube_url: str) -> dict:
     
 
 # --- LangChain 도구(Tool) 정의 ---
+# @tool
+# def extract_recipe_from_youtube(youtube_url: str) -> str:
+#     """
+#     유튜브(YouTube) URL에서 요리 레시피(재료, 조리법)를 추출할 때 사용합니다.
+#     사용자가 유튜브 링크를 제공하며 레시피를 분석, 요약, 또는 추출해달라고 요청할 경우에만 이 도구를 사용해야 합니다.
+#     입력값은 반드시 유튜브 URL이어야 합니다.
+#     """
+#     logger.info(f"유튜브 레시피 추출 도구 실행: {youtube_url}")
+#     if "youtube.com" not in youtube_url and "youtu.be" not in youtube_url:
+#         return "유효한 유튜브 URL이 아닙니다. 다시 확인해주세요."
+        
+#     app = create_recipe_graph()
+#     # LangGraph 실행
+#     result = app.invoke({"youtube_url": youtube_url})
+    
+#     # 최종 결과 또는 에러 메시지를 반환합니다.
+#     if result.get("error"):
+#         return result.get("error")
+    
+#     #  Pydantic 객체를 JSON 문자열로 반환
+#     if result.get("recipe"):
+#         return result["recipe"].model_dump_json()
+    
+#     return "알 수 없는 오류가 발생했습니다."
+
 @tool
-def extract_recipe_from_youtube(youtube_url: str) -> str:
+def extract_recipe_from_youtube(youtube_url: str) -> dict: # 1. 반환 타입을 str에서 dict로 변경
     """
     유튜브(YouTube) URL에서 요리 레시피(재료, 조리법)를 추출할 때 사용합니다.
     사용자가 유튜브 링크를 제공하며 레시피를 분석, 요약, 또는 추출해달라고 요청할 경우에만 이 도구를 사용해야 합니다.
     입력값은 반드시 유튜브 URL이어야 합니다.
+    이 도구는 최종적으로 파이썬 딕셔너리(dict) 객체를 반환합니다.
     """
-    logger.info(f"유튜브 레시피 추출 도구 실행: {youtube_url}")
+    logger.info(f"▶️ [TOOL START] 유튜브 레시피 추출 도구 실행: {youtube_url}")
     if "youtube.com" not in youtube_url and "youtu.be" not in youtube_url:
-        return "유효한 유튜브 URL이 아닙니다. 다시 확인해주세요."
+        logger.warning("유효하지 않은 유튜브 URL입니다.")
+        # 에러 상황도 dict 형태로 반환하여 Agent가 일관되게 처리하도록 합니다.
+        return {"error": "유효한 유튜브 URL이 아닙니다.", "detail": youtube_url}
+
+    try:
+        app = create_recipe_graph()
+        # LangGraph 실행
+        result = app.invoke({"youtube_url": youtube_url})
+        logger.info("✅ LangGraph 실행 완료.")
         
-    app = create_recipe_graph()
-    # LangGraph 실행
-    result = app.invoke({"youtube_url": youtube_url})
-    
-    # 최종 결과 또는 에러 메시지를 반환합니다.
-    if result.get("error"):
-        return result.get("error")
-    
-    #  Pydantic 객체를 JSON 문자열로 반환
-    if result.get("recipe"):
-        return result["recipe"].model_dump_json()
-    
-    return "알 수 없는 오류가 발생했습니다."
+        # [디버깅] LangGraph가 반환한 전체 결과 객체를 확인합니다.
+        logger.debug(f"⚙️ LangGraph Raw Result: {result}")
+
+        # 최종 결과 또는 에러 메시지를 반환합니다.
+        if result.get("error"):
+            logger.error(f"🚨 LangGraph 처리 중 에러 발생: {result.get('error')}")
+            return {"error": result.get('error')}
+
+        # Pydantic 객체가 있는지 확인하고 딕셔너리로 변환합니다.
+        if result.get("recipe"):
+            # 2. .model_dump()를 사용해 Pydantic 모델을 파이썬 딕셔너리로 변환합니다.
+            raw_recipe_dict = result["recipe"].model_dump()
+            
+            # [디버깅] 후처리 전의 '날것' 딕셔너리 데이터를 확인합니다.
+            # json.dumps를 사용하면 로그가 훨씬 보기 편해집니다.
+            logger.info("🛠️ [데이터 가공 전] Raw Recipe Dictionary:")
+            logger.info(json.dumps(raw_recipe_dict, indent=2, ensure_ascii=False))
+            
+            # 3. build_recipe_object 함수로 재료 목록 등을 정규화합니다.
+            logger.info("🔄 build_recipe_object를 호출하여 데이터 정규화를 시작합니다.")
+            structured_recipe = build_recipe_object("video", raw_recipe_dict)
+            
+            # [디버깅] 최종적으로 정규화된 딕셔너리 데이터를 확인합니다.
+            logger.info("👍 [데이터 가공 후] Structured Recipe Dictionary:")
+            logger.info(json.dumps(structured_recipe, indent=2, ensure_ascii=False))
+            
+            logger.info("✅ [TOOL END] 정규화된 딕셔너리 반환 완료.")
+            return structured_recipe
+
+        logger.error("🚨 LangGraph 결과에 'recipe' 키가 없어 처리할 수 없습니다.")
+        return {"error": "레시피를 추출하지 못했습니다.", "detail": "Graph 결과에 'recipe' 키가 없습니다."}
+
+    except Exception as e:
+        logger.error(f"🚨 [TOOL CRASH] extract_recipe_from_youtube 함수 실행 중 심각한 예외 발생: {e}", exc_info=True)
+        return {"error": "도구 실행 중 심각한 오류가 발생했습니다.", "detail": str(e)}

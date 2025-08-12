@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks 
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import logging
@@ -6,6 +6,8 @@ from fastapi.responses import JSONResponse
 import asyncio
 import aiohttp
 from planning_agent import run_agent
+import uuid
+import time
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -173,35 +175,92 @@ def is_youtube_url_request(message: str) -> bool:
     return "youtube.com" in message or "youtu.be" in message
 
 
+# 작업 상태와 결과를 저장할 인메모리 딕셔너리
+# (서버 재시작 시 초기화됨. 영구 보관이 필요하면 Redis나 DB 사용)
+jobs = {}
+
+async def run_agent_and_store_result(job_id: str, user_message: str):
+    """
+    백그라운드에서 에이전트를 실행하고 결과를 jobs 딕셔너리에 저장하는 함수
+    """
+    logger.info(f"=== 🤍Background-Task-{job_id}: 작업 시작. ===")
+    jobs[job_id] = {"status": "processing", "start_time": time.time()}
+    try:
+        result = await run_agent(user_message)
+        logger.info(f"=== 🤍 Agent 최종 응답: {result} 🤍 ===")
+        jobs[job_id] = {"status": "completed", "result": result}
+        logger.info(f"=== 🤍Background-Task-{job_id}: 작업 완료. ===")
+    except Exception as e:
+        logger.error(f"=== 🤍Background-Task-{job_id}: 작업 중 에러 발생: {e}", exc_info=True)
+        jobs[job_id] = {"status": "failed", "error": str(e)}
+
+
+# @app.post("/chat")
+# async def chat_with_agent(request: Request):
+#     """사용자 요청을 받아 텍스트/비디오 결과를 통합 스키마로 반환"""
+#     try:
+#         body = await request.json()
+#         logger.info(f"=== 🤍intent_service에서 /chat 엔드포인트 호출됨🤍 ===")
+#         user_message = body.get("message")
+#         logger.info(f"=== 🤍사용자 메시지: {user_message}")
+#         if not user_message:
+#             return JSONResponse(status_code=400, content={"error": "Bad Request", "detail": "message가 필요합니다."})
+
+#         agent_response = await run_agent(user_message)
+
+#         logger.info(f"=== 🤍 Agent 최종 응답: {agent_response} 🤍 ===")
+        
+#         # Agent가 생성한 JSON 응답을 그대로 클라이언트에게 전달합니다.
+#         return JSONResponse(content={"response": agent_response})
+
+
+#     except Exception as e:
+#         logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True)
+#         return JSONResponse(
+#             status_code=500,
+#             content={"error": "Internal Server Error", "detail": f"서버 내부 오류가 발생했습니다: {e}"}
+#         )
+
+
+# 즉시 job_id를 반환.
 @app.post("/chat")
-async def chat_with_agent(request: Request):
-    """사용자 요청을 받아 텍스트/비디오 결과를 통합 스키마로 반환"""
+async def chat_with_agent(request: Request, background_tasks: BackgroundTasks):
+    """
+    사용자 요청을 받아 작업을 백그라운드에 등록하고 즉시 작업 ID를 반환합니다.
+    """
     try:
         body = await request.json()
         logger.info(f"=== 🤍intent_service에서 /chat 엔드포인트 호출됨🤍 ===")
         user_message = body.get("message")
         logger.info(f"=== 🤍사용자 메시지: {user_message}")
         if not user_message:
-            return JSONResponse(status_code=400, content={"error": "Bad Request", "detail": "message가 필요합니다."})
+            raise HTTPException(status_code=400, detail="message가 필요합니다.")
 
-        agent_response = await run_agent(user_message)
-
-        logger.info(f"=== 🤍 Agent 최종 응답: {agent_response} 🤍 ===")
+        job_id = str(uuid.uuid4()) # 고유한 작업 ID 생성
         
-        # Agent가 생성한 JSON 응답을 그대로 클라이언트에게 전달합니다.
-
-
-
-        aggregated = {"answer": answer, "recipes": dedup}
-        return JSONResponse(content={"response": aggregated})
-
-
+        # 백그라운드에서 run_agent_and_store_result 함수를 실행하도록 등록
+        background_tasks.add_task(run_agent_and_store_result, job_id, user_message)
+        
+        # 클라이언트에게는 작업 ID를 즉시 반환
+        return JSONResponse(status_code=202, content={"job_id": job_id})
+        
     except Exception as e:
-        logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Internal Server Error", "detail": f"서버 내부 오류가 발생했습니다: {e}"}
-        )
+        logger.error(f"에이전트 처리 중 오류 발생: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"서버 내부 오류가 발생했습니다: {e}")
+
+
+# 작업 상태를 알려줌.
+@app.get("/status/{job_id}")
+async def get_status(job_id: str):
+    """
+    주어진 작업 ID의 상태와 결과를 반환합니다.
+    """
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return JSONResponse(content=job)
+
 
 
 async def forward_to_video_service(youtube_url: str):
