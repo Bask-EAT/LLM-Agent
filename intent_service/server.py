@@ -177,116 +177,20 @@ def is_youtube_url_request(message: str) -> bool:
 async def chat_with_agent(request: Request):
     """사용자 요청을 받아 텍스트/비디오 결과를 통합 스키마로 반환"""
     try:
-        # # 들어오는 데이터 로깅
-        # logger.info(f"요청 헤더: {dict(request.headers)}")
-        
-        # # JSON 데이터 직접 받기
-        # body = await request.json()
-        # logger.info(f"받은 JSON 데이터: {body}")
-        
-        # # youtube_url 또는 message 중 하나를 사용
-        # # user_message = body.get("youtube_url") or body.get("message")
-        # user_message = body.get("message")
-        # logger.info(f"추출된 메시지: {user_message}")
-        
-        # if not user_message:
-        #     raise HTTPException(status_code=400, detail="message 또는 youtube_url이 필요합니다.")
-        
-
         body = await request.json()
+        logger.info(f"=== 🤍intent_service에서 /chat 엔드포인트 호출됨🤍 ===")
         user_message = body.get("message")
+        logger.info(f"=== 🤍사용자 메시지: {user_message}")
         if not user_message:
             return JSONResponse(status_code=400, content={"error": "Bad Request", "detail": "message가 필요합니다."})
 
-        current_source = "video" if is_youtube_url_request(user_message) else "text"
+        agent_response = await run_agent(user_message)
 
-        recipes = []
-        answer = "요청하신 레시피를 정리했습니다."
-        if current_source == "video":
-            # 유튜브 링크만 있을 때는 Video 서비스만 호출 (텍스트 호출 금지)
-            try:
-                video_res = await asyncio.wait_for(forward_to_video_service(user_message), timeout=240)
-                if isinstance(video_res, dict):
-                    recipe_video = build_recipe_object("video", video_res)
-                    recent_results["video"] = recipe_video
-                    if recent_results["first_source"] is None:
-                        recent_results["first_source"] = "video"
-                    recipes.append(recipe_video)
-                    answer = video_res.get("answer", answer)
-                else:
-                    logger.error(f"video 작업 실패: {video_res}")
-            except Exception as e:
-                logger.error(f"Video 처리 중 오류: {e}")
-        else:
-            # 텍스트 질문: 다요리 분리 + N개 개수 인식 후 병렬 호출
-            try:
-                dish_names = extract_dish_names(user_message)
-                requested_n = extract_requested_count(user_message)
-                targets = []
-                if dish_names:
-                    targets = [f"{name} 레시피" for name in dish_names]
-                # 요청 개수가 명시되고 타겟이 부족하면 카테고리 기반으로 보충
-                if requested_n and len(targets) < requested_n:
-                    category = detect_category(user_message)
-                    defaults_by_cat = {
-                        "한식": ["김치찌개", "된장찌개", "비빔밥", "불고기", "잡채"],
-                        "중식": ["짜장면", "짬뽕", "마파두부", "꿔바로우"],
-                        "일식": ["규동", "가츠동", "우동", "야키소바"],
-                        "이탈리아식": ["알리오 올리오", "까르보나라", "마르게리타 피자"],
-                        "미국식": ["치즈버거", "맥앤치즈", "프라이드치킨"]
-                    }
-                    pool = defaults_by_cat.get(category, defaults_by_cat["한식"]) 
-                    for nm in pool:
-                        if len(targets) >= requested_n:
-                            break
-                        if nm not in [t.replace(" 레시피", "") for t in targets]:
-                            targets.append(f"{nm} 레시피")
+        logger.info(f"=== 🤍 Agent 최종 응답: {agent_response} 🤍 ===")
+        
+        # Agent가 생성한 JSON 응답을 그대로 클라이언트에게 전달합니다.
 
-                if not targets:
-                    targets = [f"{user_message} 레시피"]
 
-                if requested_n:
-                    targets = targets[:requested_n]
-
-                # 텍스트 병렬 호출 (하나라도 성공하면 즉시 부분 응답을 반환하도록 timeout을 낮추고 결과를 필터)
-                tasks = [asyncio.wait_for(forward_to_text_service(name), timeout=90) for name in targets]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for res in results:
-                    if isinstance(res, dict):
-                        recipe_text = build_recipe_object("text", res)
-                        recent_results["text"] = recipe_text
-                        recipes.append(recipe_text)
-                        if recent_results["first_source"] is None:
-                            recent_results["first_source"] = "text"
-                        if res.get("answer"):
-                            answer = res.get("answer")
-                    else:
-                        logger.error(f"text 병렬 작업 실패: {res}")
-            except Exception as e:
-                logger.error(f"text 병렬 처리 중 오류: {e}")
-
-        # 2) 통합 응답 조립 (첫 사용 소스가 맨 앞)
-        if not recipes:
-            first = recent_results.get("first_source")
-            if first and recent_results.get(first):
-                recipes.append(recent_results[first])
-            other = "video" if first == "text" else "text"
-            if recent_results.get(other):
-                recipes.append(recent_results[other])
-
-        # 결과가 없으면 204로 응답해 프론트에서 재시도 유도(스피너 유지 방지)
-        if not recipes:
-            return JSONResponse(status_code=204, content={"response": {"answer": "", "recipes": []}})
-
-        # 중복 제거: source+food_name 기준
-        dedup = []
-        seen_keys = set()
-        for r in recipes:
-            key = f"{r.get('source','')}|{r.get('food_name','')}"
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            dedup.append(r)
 
         aggregated = {"answer": answer, "recipes": dedup}
         return JSONResponse(content={"response": aggregated})
@@ -308,8 +212,9 @@ async def forward_to_video_service(youtube_url: str):
                 "youtube_url": youtube_url,
                 "message": youtube_url
             }
+            logger.debug("=== 🤍payload for VideoAgent Service: %s", payload)
             
-            logger.info(f"VideoAgent Service로 요청 전송: {VIDEO_SERVICE_URL}/process")
+            logger.info(f"=== 🤍VideoAgent Service로 요청 전송: {VIDEO_SERVICE_URL}/process")
             async with session.post(f"{VIDEO_SERVICE_URL}/process", json=payload) as response:
                 if response.status == 200:
                     result = await response.json()
@@ -334,6 +239,9 @@ async def forward_to_text_service(message: str):
     try:
         async with aiohttp.ClientSession() as session:
             payload = {"message": message}
+            logger.debug("=== 🤍payload for TextAgent Service: %s", payload)
+
+            logger.info(f"=== 🤍TextAgent Service로 요청 전송: {TEXT_SERVICE_URL}/process")
             async with session.post(f"{TEXT_SERVICE_URL}/process", json=payload) as response:
                 if response.status == 200:
                     result = await response.json()
@@ -359,9 +267,9 @@ async def forward_to_text_service(message: str):
             "message": str(e)
         }
     except Exception as e:
-        logger.error(f"VideoAgent Service 호출 중 오류: {e}")
+        logger.error(f"TextAgent Service 호출 중 오류: {e}")
         return {
-            "error": "VideoAgent Service 호출 중 오류가 발생했습니다.",
+            "error": "TextAgent Service 호출 중 오류가 발생했습니다.",
             "message": str(e)
         }
 

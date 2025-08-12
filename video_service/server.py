@@ -55,9 +55,9 @@ async def process_video(request: Request):
         # 들어오는 데이터 로깅
         logger.info(f"=== 💙video_service에서 /process 엔드포인트 호출됨💙 ===")
         
-        # JSON 데이터 직접 받기
+        # 프론트에서 받은 메시지
         body = await request.json()
-        logger.info(f"받은 JSON 데이터: {body}")
+        logger.info(f"프론트에서 받은 입력 메시지: {body}")
         
         youtube_url = body.get("youtube_url") or body.get("message")
         if not youtube_url:
