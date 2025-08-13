@@ -4,6 +4,7 @@ import json
 import logging
 from dotenv import load_dotenv
 from langchain_core.tools import tool
+import aiohttp
 
 # 환경 변수 로드
 load_dotenv()
@@ -17,6 +18,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+TEXT_SERVICE_URL = "http://localhost:8002"
 
 
 class TextAgent:
@@ -713,7 +716,9 @@ class TextAgent:
             if not dishes:
                 return {
                     "answer": "해당 재료로 만들 수 있는 요리를 찾을 수 없습니다.",
-                    "extracted_ingredients": ingredients
+                    "extracted_ingredients": ingredients,
+                    "food_name": None, # 추가
+                    "recipe": [] # 추가
                 }
             
             response_text = f"다음 재료들로 만들 수 있는 한식 요리를 추천드려요:\n\n"
@@ -1047,7 +1052,7 @@ class TextAgent:
 
 
 # TextAgent 인스턴스 생성
-text_agent = TextAgent()
+# text_agent = TextAgent()
 
 @tool
 async def text_based_cooking_assistant(query: str) -> str:
@@ -1057,7 +1062,41 @@ async def text_based_cooking_assistant(query: str) -> str:
     유튜브 링크(URL)가 포함된 질문에는 이 도구를 사용하지 마세요.
     사용자의 질문을 그대로 입력값으로 사용하세요.
     """
-    logger.info(f"텍스트 요리 도우미 실행: {query}")
-    result = await text_agent.process_message(query)
-    logger.info(f"------text_service.process_message에서 만들어진 json으로 결과가 나와야 함 )도우미 응답: {result}")
-    return result
+    # logger.info(f"텍스트 요리 도우미 실행: {query}")
+    # result = await text_agent.process_message(query)
+    # logger.info(f"------text_service.process_message에서 만들어진 json으로 결과가 나와야 함 )도우미 응답: {result}")
+    # return result
+
+    # --- forward_to_text_service의 로직을 그대로 가져와 적용 ---
+    logger.info(f"TextAgent 도구 실행: '{query}'에 대한 처리를 위해 {TEXT_SERVICE_URL}/process로 전달합니다.")
+    try:
+        async with aiohttp.ClientSession() as session:
+            payload = {"message": query}
+            logger.debug("=== 🤍payload for TextAgent Service: %s", payload)
+
+            logger.info(f"=== 🤍TextAgent Service로 요청 전송: {TEXT_SERVICE_URL}/process")
+            async with session.post(f"{TEXT_SERVICE_URL}/process", json=payload) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    logger.info(f"TextAgent Service 응답: {result}")
+                    # 딕셔너리를 JSON 문자열로 변환하여 반환
+                    return json.dumps(result, ensure_ascii=False)
+                else:
+                    error_text = await response.text()
+                    logger.error(f"TextAgent Service 오류 (상태: {response.status}): {error_text}")
+                    return {
+                        "error": f"TextAgent Service 오류: {response.status}",
+                        "message": error_text
+                    }
+    except aiohttp.ClientConnectorError as e:
+        logger.error(f"TextAgent Service 연결 실패: {e}")
+        return {
+            "error": "TextAgent Service에 연결할 수 없습니다.",
+            "message": "8002 서버가 실행 중인지 확인해주세요."
+        }
+    except Exception as e:
+        logger.error(f"TextAgent Service 호출 중 오류: {e}")
+        return {
+            "error": "TextAgent Service 호출 중 오류가 발생했습니다.",
+            "message": str(e)
+        }

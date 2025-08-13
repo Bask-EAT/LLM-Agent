@@ -295,42 +295,42 @@ async def forward_to_video_service(youtube_url: str):
 
 async def forward_to_text_service(message: str):
     """TextAgent Service로 텍스트 질의 전달"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            payload = {"message": message}
-            logger.debug("=== 🤍payload for TextAgent Service: %s", payload)
+    # try:
+    #     async with aiohttp.ClientSession() as session:
+    #         payload = {"message": message}
+    #         logger.debug("=== 🤍payload for TextAgent Service: %s", payload)
 
-            logger.info(f"=== 🤍TextAgent Service로 요청 전송: {TEXT_SERVICE_URL}/process")
-            async with session.post(f"{TEXT_SERVICE_URL}/process", json=payload) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    logger.info(f"TextAgent Service 응답: {result}")
-                    return result
-                else:
-                    error_text = await response.text()
-                    logger.error(f"TextAgent Service 오류 (상태: {response.status}): {error_text}")
-                    return {
-                        "error": f"TextAgent Service 오류: {response.status}",
-                        "message": error_text
-                    }
-    except aiohttp.ClientConnectorError as e:
-        logger.error(f"TextAgent Service 연결 실패: {e}")
-        return {
-            "error": "TextAgent Service에 연결할 수 없습니다.",
-            "message": "8002 서버가 실행 중인지 확인해주세요."
-        }
-    except Exception as e:
-        logger.error(f"TextAgent Service 호출 중 오류: {e}")
-        return {
-            "error": "TextAgent Service 호출 중 오류가 발생했습니다.",
-            "message": str(e)
-        }
-    except Exception as e:
-        logger.error(f"TextAgent Service 호출 중 오류: {e}")
-        return {
-            "error": "TextAgent Service 호출 중 오류가 발생했습니다.",
-            "message": str(e)
-        }
+    #         logger.info(f"=== 🤍TextAgent Service로 요청 전송: {TEXT_SERVICE_URL}/process")
+    #         async with session.post(f"{TEXT_SERVICE_URL}/process", json=payload) as response:
+    #             if response.status == 200:
+    #                 result = await response.json()
+    #                 logger.info(f"TextAgent Service 응답: {result}")
+    #                 return result
+    #             else:
+    #                 error_text = await response.text()
+    #                 logger.error(f"TextAgent Service 오류 (상태: {response.status}): {error_text}")
+    #                 return {
+    #                     "error": f"TextAgent Service 오류: {response.status}",
+    #                     "message": error_text
+    #                 }
+    # except aiohttp.ClientConnectorError as e:
+    #     logger.error(f"TextAgent Service 연결 실패: {e}")
+    #     return {
+    #         "error": "TextAgent Service에 연결할 수 없습니다.",
+    #         "message": "8002 서버가 실행 중인지 확인해주세요."
+    #     }
+    # except Exception as e:
+    #     logger.error(f"TextAgent Service 호출 중 오류: {e}")
+    #     return {
+    #         "error": "TextAgent Service 호출 중 오류가 발생했습니다.",
+    #         "message": str(e)
+    #     }
+    # except Exception as e:
+    #     logger.error(f"TextAgent Service 호출 중 오류: {e}")
+    #     return {
+    #         "error": "TextAgent Service 호출 중 오류가 발생했습니다.",
+    #         "message": str(e)
+    #     }
 
 @app.get("/health")
 async def health_check():

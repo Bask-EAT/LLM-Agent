@@ -4,7 +4,7 @@ from pydantic import BaseModel
 import uvicorn
 import logging
 import json
-from agent import text_agent
+from agent import TextAgent
 import sys, os
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +27,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# TextAgent 인스턴스 생성
+text_agent = TextAgent()
 
 class TextRequest(BaseModel):
     message: str
