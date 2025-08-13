@@ -3,11 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import logging
 from fastapi.responses import JSONResponse
-import asyncio
-import aiohttp
 from planning_agent import run_agent
 import uuid
 import time
+import re
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -175,6 +174,17 @@ def is_youtube_url_request(message: str) -> bool:
     return "youtube.com" in message or "youtu.be" in message
 
 
+
+def count_youtube_urls(message: str) -> int:
+    """메시지에 포함된 유튜브 URL의 개수를 반환합니다."""
+    if not message:
+        return 0
+    # youtube.com/watch?v= 또는 youtu.be/ 패턴을 찾습니다.
+    # re.findall은 모든 일치 항목을 리스트로 반환합니다.
+    youtube_patterns = re.findall(r"(youtube\.com/watch\?v=|youtu\.be/)", message)
+    return len(youtube_patterns)
+
+
 # 작업 상태와 결과를 저장할 인메모리 딕셔너리
 # (서버 재시작 시 초기화됨. 영구 보관이 필요하면 Redis나 DB 사용)
 jobs = {}
@@ -195,32 +205,6 @@ async def run_agent_and_store_result(job_id: str, user_message: str):
         jobs[job_id] = {"status": "failed", "error": str(e)}
 
 
-# @app.post("/chat")
-# async def chat_with_agent(request: Request):
-#     """사용자 요청을 받아 텍스트/비디오 결과를 통합 스키마로 반환"""
-#     try:
-#         body = await request.json()
-#         logger.info(f"=== 🤍intent_service에서 /chat 엔드포인트 호출됨🤍 ===")
-#         user_message = body.get("message")
-#         logger.info(f"=== 🤍사용자 메시지: {user_message}")
-#         if not user_message:
-#             return JSONResponse(status_code=400, content={"error": "Bad Request", "detail": "message가 필요합니다."})
-
-#         agent_response = await run_agent(user_message)
-
-#         logger.info(f"=== 🤍 Agent 최종 응답: {agent_response} 🤍 ===")
-        
-#         # Agent가 생성한 JSON 응답을 그대로 클라이언트에게 전달합니다.
-#         return JSONResponse(content={"response": agent_response})
-
-
-#     except Exception as e:
-#         logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True)
-#         return JSONResponse(
-#             status_code=500,
-#             content={"error": "Internal Server Error", "detail": f"서버 내부 오류가 발생했습니다: {e}"}
-#         )
-
 
 # 즉시 job_id를 반환.
 @app.post("/chat")
@@ -236,6 +220,18 @@ async def chat_with_agent(request: Request, background_tasks: BackgroundTasks):
         if not user_message:
             raise HTTPException(status_code=400, detail="message가 필요합니다.")
 
+
+        # --- 👇 여기가 바로 추가된 유튜브 링크 개수 검사 로직 👇 ---
+        if count_youtube_urls(user_message) > 1:
+            logger.warning(f"요청 거부: 메시지에 유튜브 링크가 2개 이상 포함됨 - {user_message}")
+            # 400 Bad Request 에러를 발생시켜 사용자에게 알립니다.
+            raise HTTPException(
+                status_code=400,
+                detail="죄송합니다, 한 번에 하나의 유튜브 링크만 분석할 수 있습니다."
+            )
+        # --- 👆 여기까지가 추가된 부분 👆 ---
+
+
         job_id = str(uuid.uuid4()) # 고유한 작업 ID 생성
         
         # 백그라운드에서 run_agent_and_store_result 함수를 실행하도록 등록
@@ -244,9 +240,15 @@ async def chat_with_agent(request: Request, background_tasks: BackgroundTasks):
         # 클라이언트에게는 작업 ID를 즉시 반환
         return JSONResponse(status_code=202, content={"job_id": job_id})
         
+    except HTTPException as http_exc:
+        # 1. 우리가 직접 발생시킨 HTTPException은 그대로 클라이언트에 전달합니다.
+        # 이렇게 하면 400번 에러가 500번으로 재포장되지 않습니다.
+        logger.error(f"HTTP 예외 발생 (클라이언트로 전달됨): {http_exc.status_code} - {http_exc.detail}")
+        raise http_exc
     except Exception as e:
-        logger.error(f"에이전트 처리 중 오류 발생: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"서버 내부 오류가 발생했습니다: {e}")
+        # 2. 예상치 못한 다른 모든 종류의 에러는 500번 내부 서버 오류로 처리합니다.
+        logger.error(f"예상치 못한 서버 오류 발생: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"서버 내부에서 예상치 못한 오류가 발생했습니다: {e}")
 
 
 # 작업 상태를 알려줌.
@@ -261,76 +263,6 @@ async def get_status(job_id: str):
     
     return JSONResponse(content=job)
 
-
-
-async def forward_to_video_service(youtube_url: str):
-    """VideoAgent Service로 유튜브 링크 전달"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            payload = {
-                "youtube_url": youtube_url,
-                "message": youtube_url
-            }
-            logger.debug("=== 🤍payload for VideoAgent Service: %s", payload)
-            
-            logger.info(f"=== 🤍VideoAgent Service로 요청 전송: {VIDEO_SERVICE_URL}/process")
-            async with session.post(f"{VIDEO_SERVICE_URL}/process", json=payload) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    logger.info(f"VideoAgent Service 응답: {result}")
-                    return result
-                else:
-                    error_text = await response.text()
-                    logger.error(f"VideoAgent Service 오류 (상태: {response.status}): {error_text}")
-                    return {
-                        "error": f"VideoAgent Service 오류: {response.status}",
-                        "message": error_text
-                    }
-    except aiohttp.ClientConnectorError as e:
-        logger.error(f"VideoAgent Service 연결 실패: {e}")
-        return {
-            "error": "VideoAgent Service에 연결할 수 없습니다.",
-            "message": "8003 서버가 실행 중인지 확인해주세요."
-        }
-
-async def forward_to_text_service(message: str):
-    """TextAgent Service로 텍스트 질의 전달"""
-    # try:
-    #     async with aiohttp.ClientSession() as session:
-    #         payload = {"message": message}
-    #         logger.debug("=== 🤍payload for TextAgent Service: %s", payload)
-
-    #         logger.info(f"=== 🤍TextAgent Service로 요청 전송: {TEXT_SERVICE_URL}/process")
-    #         async with session.post(f"{TEXT_SERVICE_URL}/process", json=payload) as response:
-    #             if response.status == 200:
-    #                 result = await response.json()
-    #                 logger.info(f"TextAgent Service 응답: {result}")
-    #                 return result
-    #             else:
-    #                 error_text = await response.text()
-    #                 logger.error(f"TextAgent Service 오류 (상태: {response.status}): {error_text}")
-    #                 return {
-    #                     "error": f"TextAgent Service 오류: {response.status}",
-    #                     "message": error_text
-    #                 }
-    # except aiohttp.ClientConnectorError as e:
-    #     logger.error(f"TextAgent Service 연결 실패: {e}")
-    #     return {
-    #         "error": "TextAgent Service에 연결할 수 없습니다.",
-    #         "message": "8002 서버가 실행 중인지 확인해주세요."
-    #     }
-    # except Exception as e:
-    #     logger.error(f"TextAgent Service 호출 중 오류: {e}")
-    #     return {
-    #         "error": "TextAgent Service 호출 중 오류가 발생했습니다.",
-    #         "message": str(e)
-    #     }
-    # except Exception as e:
-    #     logger.error(f"TextAgent Service 호출 중 오류: {e}")
-    #     return {
-    #         "error": "TextAgent Service 호출 중 오류가 발생했습니다.",
-    #         "message": str(e)
-    #     }
 
 @app.get("/health")
 async def health_check():
