@@ -34,8 +34,8 @@ from text_service.agent import text_based_cooking_assistant
 from video_service.core.extractor import extract_recipe_from_youtube
 from ingredient_service.tools import (
     search_ingredient_by_text,
-    search_ingredient_by_image,
-    search_ingredient_multimodal
+    # search_ingredient_by_image,
+    # search_ingredient_multimodal
 )
 
 # 1. 사용할 도구(Tools) 정의
@@ -43,8 +43,8 @@ tools = [
     text_based_cooking_assistant, 
     extract_recipe_from_youtube,
     search_ingredient_by_text,
-    search_ingredient_by_image,
-    search_ingredient_multimodal
+    # search_ingredient_by_image,
+    # search_ingredient_multimodal
     ]
 
 # 2. LLM 모델 설정
@@ -73,7 +73,8 @@ prompt = ChatPromptTemplate.from_messages([
 
     - **`chatType` = "cart"으로 판단하는 경우:**
       - "계란 찾아줘", "소금 정보 알려줘" 와 같이 상품 정보 자체를 물어볼 때
-      - "장바구니에 담아줘", "구매하고 싶어" 와 같이 명시적인 구매/장바구니 의도가 있을 때
+      - "찾아줘", "얼마야", "가격 알려줘", "정보 알려줘", "구매", "장바구니" 등의 단어가 포함될 때
+      - **"양배추 찾아줘"는 "상품 검색"입니다. "양배추로 만드는 요리"가 "요리 레시피"입니다. 이 둘을 절대 혼동하지 마세요.**
      
     ---
     ### **2단계: 의도에 따른 도구 선택**
@@ -106,7 +107,7 @@ prompt = ChatPromptTemplate.from_messages([
       ```
      
     - **`chatType`이 "cart"일 경우의 JSON 구조:**
-      - `search_ingredient_by_text` 도구로 받은 상품 정보를 **아래 형식으로 변환하여 조립**해야 합니다.
+      - **[핵심 규칙]** `search_ingredient_by_text` 도구가 반환한 `results` 리스트에서, 각 상품(객체)마다 **`product_name`, `price`, `image_url`, `product_address`** 4개의 키만 추출하여 `ingredients` 리스트를 만드세요.
       ```json
       {{
         "chatType": "cart",
@@ -116,8 +117,18 @@ prompt = ChatPromptTemplate.from_messages([
             "source": "ingredient_search",
             "food_name": "사용자가 검색한 상품명 (예: 계란)",
             "ingredients": [ 
-                {{"product_name": "상품이름A", "price": 10000, ...}},
-                {{"product_name": "상품이름B", "price": 12000, ...}}
+                {{
+                  "product_name": "양배추 (통)", 
+                  "price": 3720,
+                  "image_url": "https://...",
+                  "product_address": "https://..."
+                }},
+                {{
+                  "product_name": "양배추 (1/2통)", 
+                  "price": 1980,
+                  "image_url": "https://...",
+                  "product_address": "https://..."
+                }}
             ],
             "recipe": []
           }}
@@ -167,8 +178,6 @@ async def run_agent(user_message: str):
             clean_json_string = output_string
         
         logger.info(f"--- [STEP 6] Attempting to parse the string with json.loads()... ---")
-        
-        # ⚠️ 여기가 가장 유력한 충돌 지점입니다.
         parsed_data = json.loads(clean_json_string)
         
         logger.info(f"--- [STEP 7] json.loads() finished successfully. Data type is: {type(parsed_data)}. ---")
@@ -178,6 +187,5 @@ async def run_agent(user_message: str):
         return parsed_data
 
     except Exception as e:
-        # 이 로그가 찍힌다면, 코드에 잡을 수 있는 예외가 발생한 것입니다.
         logger.error(f"--- 🚨 [CAUGHT EXCEPTION] An exception was caught: {e}", exc_info=True)
         raise e

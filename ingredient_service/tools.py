@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 @tool
 async def search_ingredient_by_text(query: str) -> dict:
-    """사용자가 상품 정보를 찾거나, 장바구니에 상품을 담으려 할 때 사용합니다. '계란 찾아줘', '소금 장바구니에 담아줘' 와 같은 요청을 처리합니다."""
+    """사용자가 상품 정보를 찾거나, 장바구니에 상품을 담으려 할 때 사용합니다. '계란 찾아줘', '소금 장바구니에 담아줘' 와 같은 요청을 처리합니다. 요리법이나 레시피 질문에는 절대 사용하지 마세요."""
     
     logging.info(f"=== 🤍search_ingredient_by_text 호출. 검색어: {query}")
     api_url = f"{INGREDIENT_SERVICE_URL}/search/text"
