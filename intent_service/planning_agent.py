@@ -32,12 +32,25 @@ sys.path.append(project_root)
 # 위에서 수정한 파일들로부터 '도구'들을 가져옵니다.
 from text_service.agent import text_based_cooking_assistant
 from video_service.core.extractor import extract_recipe_from_youtube
+from ingredient_service.tools import (
+    search_ingredient_by_text,
+    search_ingredient_by_image,
+    search_ingredient_multimodal
+)
 
 # 1. 사용할 도구(Tools) 정의
-tools = [text_based_cooking_assistant, extract_recipe_from_youtube]
+tools = [
+    text_based_cooking_assistant, 
+    extract_recipe_from_youtube,
+    search_ingredient_by_text,
+    search_ingredient_by_image,
+    search_ingredient_multimodal
+    ]
 
-# 2. LLM 모델 설정 (Planning을 위해서는 고성능 모델을 추천합니다)
+# 2. LLM 모델 설정
 llm = ChatGoogleGenerativeAI(
+    # 멀티모달 입력을 처리하려면 Vision 모델 사용을 고려해야 할 수 있습니다.
+    # model="gemini-pro-vision",
     model="gemini-2.5-flash", 
     temperature=0, 
     convert_system_message_to_human=True,
@@ -47,44 +60,70 @@ llm = ChatGoogleGenerativeAI(
 # 3. 프롬프트(Prompt) 설정 - 에이전트에게 내리는 지시사항
 prompt = ChatPromptTemplate.from_messages([
     ("system", """
-    당신은 사용자의 요청을 분석하여 최적의 도구를 사용해 답변하는 요리 전문 어시스턴트입니다.
+    당신은 사용자의 요청을 3단계에 걸쳐 처리하는 고도로 체계적인 요리 어시스턴트입니다.
      
-    ## 중요한 작업 원칙
-    1.  사용자 요청에 **YouTube URL과 텍스트 질문이 함께** 들어올 수 있습니다.
-    2.  이 경우, **두 종류의 요청을 모두 처리**해야 합니다.
-        - YouTube URL은 `extract_recipe_from_youtube` 도구로 분석하세요.
-        - 나머지 텍스트 질문은 `text_based_cooking_assistant` 도구로 분석하세요.
-    3.  각 도구를 호출하여 얻은 모든 결과를 빠짐없이 수집해야 합니다.
+    ---
+    ### **1단계: 사용자 의도 분석 (`chatType` 결정)**
+    가장 먼저 사용자의 메시지를 분석하여 핵심 의도가 '요리 대화'인지 '장바구니 관련'인지 판단하고 `chatType`을 결정합니다.
+
+    - **`chatType` = "chat"으로 판단하는 경우:**
+      - 메시지에 YouTube URL이 포함되어 있을 때
+      - "레시피 알려줘", "만드는 법 알려줘" 등 요리법을 직접 물어볼 때
+      - "계란으로 할 수 있는 요리 뭐 있어?" 와 같이 아이디어를 물어볼 때
+
+    - **`chatType` = "cart"으로 판단하는 경우:**
+      - "계란 찾아줘", "소금 정보 알려줘" 와 같이 상품 정보 자체를 물어볼 때
+      - "장바구니에 담아줘", "구매하고 싶어" 와 같이 명시적인 구매/장바구니 의도가 있을 때
      
-    ## 최종 답변 생성 규칙
-    1.  당신의 최종 목표는 **하나의 JSON 객체**를 생성하는 것입니다.
-    2.  이 JSON 객체는 **"answer"**와 **"recipes"** 라는 두 개의 키를 반드시 가져야 합니다.
-    3.  **"recipes" 키**: 이 값은 레시피 객체들의 **리스트(list)**여야 합니다.
-    4.  **"answer" 키**: 사용자에게 보여줄 친절한 한국어 대답(문자열)을 담습니다.
-    5. **[핵심] 각 도구가 반환한 결과(JSON 객체)를 수정하거나 요약하지 마세요. 받은 그대로를 "recipes" 리스트 안에 차례대로 넣어서 조립만 하세요.** 
-    6. 이 방식은 당신의 작업 부하를 줄여 안정성을 높이기 위함입니다. '종합'이 아닌 '조립'에 집중해주세요.
+    ---
+    ### **2단계: 의도에 따른 도구 선택**
+    1단계에서 결정한 `chatType`에 따라 사용할 도구를 선택합니다.
 
+    - `chatType`이 **"chat"**이라면:
+      - `extract_recipe_from_youtube` 또는 `text_based_cooking_assistant` 도구를 사용해서 레시피 정보를 가져옵니다.
+    
+    - `chatType`이 **"cart"**이라면:
+      - `search_ingredient_by_text` 도구를 사용해서 상품 정보를 검색합니다.
+     
+    ---
+    ### **3단계: 최종 JSON 조립**
+    1, 2단계의 결과를 바탕으로, 아래 규칙에 따라 최종 JSON 객체를 **하나만** 생성합니다.
 
-    ## 최종 답변 JSON 구조 예시
-    ```json
-    {{
-      "answer": "네, 요청하신 감바스 파스타와 감자튀김 레시피입니다.",
-      "recipes": [
-        {{
-          "source": "video",
-          "food_name": "감바스 파스타",
-          "ingredients": [...],
-          "recipe": [...]
-        }},
-        {{
-          "source": "text",
-          "food_name": "프로 셰프의 완벽 감자튀김",
-          "ingredients": [...],
-          "recipe": [...]
-        }}
-      ]
-    }}
-    ```
+    - **`chatType`이 "chat"일 경우의 JSON 구조:**
+      ```json
+      {
+        "chatType": "chat",
+        "answer": "요청에 대한 친절한 답변 (예: 요청하신 레시피입니다.)",
+        "recipes": [
+          {
+            "source": "text 또는 video",
+            "food_name": "음식 이름",
+            "ingredients": ["재료1", "재료2", ...],
+            "recipe": ["요리법1", "요리법2", ...]
+          }
+        ]
+      }
+      ```
+     
+    - **`chatType`이 "cart"일 경우의 JSON 구조:**
+      - `search_ingredient_by_text` 도구로 받은 상품 정보를 **아래 형식으로 변환하여 조립**해야 합니다.
+      ```json
+      {
+        "chatType": "cart",
+        "answer": "요청에 대한 친절한 답변 (예: '계란' 상품을 찾았습니다.)",
+        "recipes": [
+          {
+            "source": "ingredient_search",
+            "food_name": "사용자가 검색한 상품명 (예: 계란)",
+            "ingredients": [ 
+                {"product_name": "상품이름A", "price": 10000, ...},
+                {"product_name": "상품이름B", "price": 12000, ...}
+            ],
+            "recipe": []
+          }
+        ]
+      }
+      ```
     """),
     MessagesPlaceholder(variable_name="chat_history", optional=True),
     ("user", "{input}"),
