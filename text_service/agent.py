@@ -28,6 +28,8 @@ class TextAgent:
         self.conversation_history = []
         self.last_dish = None  # 마지막 언급된 요리명 캐시
         self.last_ingredients = []  # 마지막 조회된 재료 리스트 캐시
+        self.last_intent = None  # 마지막 처리한 의도
+        self.last_suggested_dishes = []  # 마지막 추천한 요리명 리스트
 
 
     def _add_assistant_response(self, content: str):
@@ -38,12 +40,37 @@ class TextAgent:
         recent = self.conversation_history[-count:]
         return "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent])
 
+    def _is_style_followup(self, message: str) -> bool:
+        """메시지가 '스타일만' 요청하는 후속인지 판단.
+        최근 발화에 재료기반 추천이 있었고, 현재 메시지에 스타일 키워드만 있고 재료/요리명이 없으면 True.
+        """
+        text = (message or "").lower().strip()
+        if not text:
+            return False
+        style_keywords = [
+            "한식", "중식", "일식", "프랑스", "프랑스식", "이탈리아", "이탈리아식",
+            "스페인", "스페인식", "지중해", "미국", "미국식", "korean", "japanese",
+            "chinese", "french", "italian", "spanish", "mediterranean", "american"
+        ]
+        # 스타일 키워드만 있고 재료/요리 관련 단어가 거의 없는지
+        has_style = any(k in text for k in style_keywords)
+        non_style_hints = ["재료", "레시피", "만들", "요리", "준비", "굽", "볶", "끓"]
+        has_non_style = any(k in text for k in non_style_hints)
+        # 직전 의도가 재료기반 추천이었다면 후속으로 판단
+        recent_was_ingredients = (self.last_intent == "INGREDIENTS_TO_DISHES")
+        return has_style and not has_non_style and recent_was_ingredients
+
 
     async def process_message(self, message: str) -> dict:
         """메인 메시지 처리 함수"""
         try:
             # 현재 메시지를 히스토리에 추가
             self.conversation_history.append({"role": "user", "content": message})
+
+            # 숫자 선택(예: "1번", "2,3번") 후속 처리를 최우선 감지
+            selection_result = await self._handle_selection_if_any(message)
+            if selection_result is not None:
+                return selection_result
             
             # 의도 분류 (최적화된 단일 호출)
             intent = await self.classify_intent_optimized(message)
@@ -51,53 +78,79 @@ class TextAgent:
 
             # 의도별 처리
             if intent == "CATEGORY":
-                result = await self.recommend_dishes_optimized(message)
-                # 결과 표준화: {category: "한식"|..., items: [...]}
-                if not isinstance(result, dict) or not result.get("items"):
-                    response_text = "죄송합니다. 추천 요리를 찾을 수 없습니다. 다른 카테고리를 말씀해주세요."
+                # 최근 재료가 있더라도, 순수 카테고리 요청인지/스타일 후속 요청인지 구분
+                if self.last_ingredients and self._is_style_followup(message):
+                    logger.info(
+                        f"CATEGORY → 스타일 후속 요청 감지. 최근 재료로 우회: {self.last_ingredients}"
+                    )
+                    result = await self.recommend_dishes_by_ingredients_with_style(message, self.last_ingredients)
+                    response_text = result.get("answer", "재료로 만들 수 있는 요리를 찾을 수 없습니다.")
+                    self._add_assistant_response(response_text)
+                    self.last_intent = "INGREDIENTS_TO_DISHES"
+                    return {
+                        "answer": response_text,
+                        "food_name": None,
+                        "ingredients": result.get("extracted_ingredients", self.last_ingredients),
+                        "recipe": []
+                    }
                 else:
-                    category_label = result.get("category", "한식")
-                    items = result.get("items", [])
-                    response_text = ""
-                    if category_label == "한식":
-                        # 한식: 요리명만
-                        for i, item in enumerate(items, 1):
-                            name = item if isinstance(item, str) else item.get("name", "")
-                            if name:
-                                response_text += f"{i}. {name}\n"
+                    # 기존 카테고리 로직
+                    result = await self.recommend_dishes_optimized(message)
+                    # 결과 표준화: {category: "한식"|..., items: [...]}
+                    if not isinstance(result, dict) or not result.get("items"):
+                        response_text = "죄송합니다. 추천 요리를 찾을 수 없습니다. 다른 카테고리를 말씀해주세요."
                     else:
-                        # 타국 요리: 간단한 설명 포함
-                        for i, item in enumerate(items, 1):
-                            if isinstance(item, dict):
-                                name = item.get("name", "")
-                                desc = item.get("description", "")
-                                line = name
-                                if desc:
-                                    line += f" — {desc}"
-                                if line.strip():
-                                    response_text += f"{i}. {line}\n"
-                            else:
-                                response_text += f"{i}. {item}\n"
-                    if not response_text.strip():
-                        response_text = "죄송합니다. 추천 요리를 찾을 수 없습니다."
-                
-                self._add_assistant_response(response_text)
-                return {
-                    "answer": response_text,
-                    "food_name": None,
-                    "ingredients": [],
-                    "recipe": []
-                }
+                        category_label = result.get("category", "한식")
+                        items = result.get("items", [])
+                        response_text = ""
+                        if category_label == "한식":
+                            # 한식: 요리명만
+                            for i, item in enumerate(items, 1):
+                                name = item if isinstance(item, str) else item.get("name", "")
+                                if name:
+                                    response_text += f"{i}. {name}\n"
+                        else:
+                            # 타국 요리: 간단한 설명 포함
+                            for i, item in enumerate(items, 1):
+                                if isinstance(item, dict):
+                                    name = item.get("name", "")
+                                    desc = item.get("description", "")
+                                    line = name
+                                    if desc:
+                                        line += f" — {desc}"
+                                    if line.strip():
+                                        response_text += f"{i}. {line}\n"
+                                else:
+                                    response_text += f"{i}. {item}\n"
+                        if not response_text.strip():
+                            response_text = "죄송합니다. 추천 요리를 찾을 수 없습니다."
+                    
+                    self._add_assistant_response(response_text)
+                    self.last_intent = "CATEGORY"
+                    return {
+                        "answer": response_text,
+                        "food_name": None,
+                        "ingredients": [],
+                        "recipe": []
+                    }
                 
             elif intent == "INGREDIENTS_TO_DISHES":
                 result = await self.recommend_dishes_by_ingredients(message)
                 response_text = result.get("answer", "재료로 만들 수 있는 요리를 찾을 수 없습니다.")
                 
+                # 추출된 재료를 last_ingredients에 저장
+                extracted_ingredients = result.get("extracted_ingredients", [])
+                if extracted_ingredients:
+                    self.last_ingredients = extracted_ingredients
+                    logger.info(f"재료 캐시 업데이트: {self.last_ingredients}")
+                
                 self._add_assistant_response(response_text)
+                self.last_intent = "INGREDIENTS_TO_DISHES"
                 return {
                     "answer": response_text,
                     "food_name": None,
-                    "ingredients": result.get("extracted_ingredients", []),
+                    # 프론트에서 레시피 카드로 렌더링되지 않도록 비움
+                    "ingredients": [],
                     "recipe": []
                 }
                 
@@ -275,7 +328,7 @@ class TextAgent:
 
     async def classify_intent_optimized(self, message: str) -> str:
         """최적화된 의도 분류"""
-        context = self._get_recent_context(3)  # 최근 3개 메시지만 사용
+        context = self._get_recent_context(5)  # 최근 3개 메시지만 사용
         
         prompt = f"""
         당신은 세계적으로 유명한 프로 셰프이자 요리 전문가입니다.
@@ -437,9 +490,16 @@ class TextAgent:
             """
 
         try:
-            resp = self.model.generate_content(prompt)
-            response_text = self._clean_json_response(resp.text)
-            data = json.loads(response_text)
+            resp = self.model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response_text = resp.text.strip()
+            try:
+                data = json.loads(response_text)
+            except json.JSONDecodeError:
+                logger.error(f"CATEGORY JSON 파싱 실패. 응답 미리보기: {response_text[:200]}")
+                return {"category": category_key, "items": []}
             items: list
             if category_key == "한식":
                 # 기대 형식: ["요리1", ...]
@@ -651,7 +711,7 @@ class TextAgent:
         """
         try:
             resp = self.model.generate_content(prompt)
-            response_text = self._clean_json_response(resp.text)
+            response_text = resp.text.strip()
             data = json.loads(response_text)
             # 안전장치
             data.setdefault("ingredient", target)
@@ -678,7 +738,7 @@ class TextAgent:
         """
         try:
             resp = self.model.generate_content(prompt)
-            response_text = self._clean_json_response(resp.text)
+            response_text = resp.text.strip()
             data = json.loads(response_text)
             return {
                 "possible": bool(data.get("possible", False)),
@@ -689,26 +749,58 @@ class TextAgent:
             return {"possible": False, "flavor_change": ""}
     
     async def recommend_dishes_by_ingredients(self, message: str) -> dict:
-        """재료로 요리 추천"""
+        """재료로 요리 추천 (개선된 버전)"""
         prompt = f"""
-        당신은 강레오, 안성재 한식 셰프입니다.
-        
+        당신은 한식 전문가입니다. 사용자가 요청한 재료로 만들 수 있는 한식 요리를 추천해주세요.
+
         사용자 메시지: "{message}"
-        
-        1. 먼저 언급된 재료들을 JSON 배열로 추출하세요.
-        2. 해당 재료들로 가정에서 만들 수 있는 한식 요리 3가지를 추천하세요.
-        
-        응답 형식:
+
+        **중요한 규칙:**
+        1. 반드시 유효한 JSON 형식으로만 응답하세요
+        2. JSON 이외의 텍스트나 설명은 절대 포함하지 마세요
+        3. 코드 블록(```)이나 다른 마크다운 문법을 사용하지 마세요
+        4. 재료가 명확하지 않으면 빈 배열로 설정하세요
+
+        **작업 순서:**
+        1. 메시지에서 언급된 재료를 추출하세요
+        2. 해당 재료를 주재료로 사용하는 한식 요리 3가지를 추천하세요
+        3. 각 요리 별로 간단한 소개를 하세요
+
+        **JSON 응답 형식 (이 형식을 정확히 따르세요):**
         {{
-          "ingredients": ["재료1", "재료2", "재료3"],
-          "dishes": ["요리1", "요리2", "요리3"]
+          "ingredients": ["재료1", "재료2"],
+          "dishes": [
+            {{
+              "name": "요리명1",
+              "description": "한 줄 소개"
+            }},
+            {{
+              "name": "요리명2", 
+              "description": "한 줄 소개"
+            }},
+            {{
+              "name": "요리명3", 
+              "description": "한 줄 소개"
+            }}
+          ]
         }}
         """
         
         try:
-            resp = self.model.generate_content(prompt)
-            response_text = self._clean_json_response(resp.text)
-            result = json.loads(response_text)
+            resp = self.model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response_text = resp.text.strip()
+            
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError as json_err:
+                logger.error(f"JSON 파싱 실패: {json_err}. 정리된 텍스트: {response_text[:200]}")
+                return {
+                    "answer": "재료 분석 중 오류가 발생했습니다. 다시 시도해주세요.",
+                    "extracted_ingredients": []
+                }
             
             ingredients = result.get("ingredients", [])
             dishes = result.get("dishes", [])
@@ -717,22 +809,35 @@ class TextAgent:
                 return {
                     "answer": "해당 재료로 만들 수 있는 요리를 찾을 수 없습니다.",
                     "extracted_ingredients": ingredients,
-                    "food_name": None, # 추가
-                    "recipe": [] # 추가
+                    "food_name": None,
+                    "recipe": []
                 }
             
             response_text = f"다음 재료들로 만들 수 있는 한식 요리를 추천드려요:\n\n"
-            response_text += "📋 [사용 재료]\n"
-            for i, ingredient in enumerate(ingredients, 1):
-                response_text += f"• {ingredient}\n"
+
             
             response_text += "\n🍳 [추천 요리]\n"
             for i, dish in enumerate(dishes, 1):
-                response_text += f"{i}. {dish}\n"
+                if isinstance(dish, dict):
+                    name = (dish.get("name") or "").strip()
+                    desc = (dish.get("description") or dish.get("note") or dish.get("uses") or "").strip()
+                    line = f"{i}. {name}" if name else f"{i}."
+                    if desc:
+                        line += f" — {desc}"
+                    response_text += line + "\n"
+                else:
+                    response_text += f"{i}. {dish}\n"
             
             response_text += "\n원하는 요리 형식이 있으신가요? (프랑스식, 이탈리아식, 미국식 등)"
             response_text += "\n또는 위 요리 중 어떤 것의 레시피를 알고 싶으시면 번호나 요리명을 말씀해주세요!"
             
+            # 최근 추천 요리 캐시(번호 선택 후속 처리용)
+            self.last_suggested_dishes = [
+                (d.get("name") if isinstance(d, dict) else str(d)).strip()
+                for d in dishes
+                if (isinstance(d, dict) and d.get("name")) or isinstance(d, str)
+            ]
+
             return {
                 "answer": response_text,
                 "extracted_ingredients": ingredients,
@@ -744,6 +849,108 @@ class TextAgent:
             return {
                 "answer": "재료 분석 중 오류가 발생했습니다. 다시 시도해주세요.",
                 "extracted_ingredients": []
+            }
+
+    async def recommend_dishes_by_ingredients_with_style(self, message: str, last_ingredients: list) -> dict:
+        """기존 재료로 다른 국가 스타일 요리 추천"""
+        # 요청된 요리 스타일 추출
+        cuisine_profiles = [
+            {"key": "한식", "chef": "강레오, 안성재", "keywords": ["한식", "korean", "코리안"]},
+            {"key": "중식", "chef": "Ken Hom", "keywords": ["중식", "중국", "차이니즈"]},
+            {"key": "일식", "chef": "Yoshihiro Murata", "keywords": ["일식", "일본", "재패니즈", "japanese", "japan"]},
+            {"key": "프랑스식", "chef": "Pierre Koffmann", "keywords": ["프랑스", "프랑스식", "프렌치", "french"]},
+            {"key": "이탈리아식", "chef": "Massimo Bottura", "keywords": ["이탈리아", "이탈리아식", "이탈리안", "italian"]},
+            {"key": "스페인식", "chef": "José Andrés", "keywords": ["스페인", "스페인식", "spanish"]},
+            {"key": "지중해식", "chef": "Yotam Ottolenghi", "keywords": ["지중해", "mediterranean"]},
+            {"key": "미국식", "chef": "Gordon Ramsay", "keywords": ["미국", "미국식", "아메리칸", "american"]},
+        ]
+        
+        lower_msg = message.lower()
+        inferred = next((c for c in cuisine_profiles if any(k in lower_msg or k in message for k in c["keywords"])), None)
+        # 모호하면 기본 한식
+        if inferred is None:
+            inferred = cuisine_profiles[0]
+        
+        category_key = inferred["key"]
+        chef = inferred["chef"]
+        
+        # 기존 재료를 문자열로 변환
+        ingredients_str = ", ".join(last_ingredients)
+        
+        prompt = f"""
+        당신은 {category_key} 요리 전문가입니다. 기존 재료를 활용해 {category_key} 스타일 요리를 추천해주세요.
+
+        기존 재료: {ingredients_str}
+        요청된 스타일: {category_key}
+        사용자 메시지: "{message}"
+
+        중요한 규칙:
+        - 반드시 유효한 JSON 형식으로만 응답하세요
+        - JSON 이외의 텍스트나 설명은 절대 포함하지 마세요
+        - 코드 블록이나 다른 마크다운 문법을 사용하지 마세요
+        - 위 재료들을 반드시 주재료로 사용하는 {category_key} 요리만 추천하세요
+
+        JSON 응답 형식(정확히 따르세요):
+        {{
+          "style": "{category_key}",
+          "dishes": [
+            {{"name": "요리명1", "description": "한 줄 소개"}},
+            {{"name": "요리명2", "description": "한 줄 소개"}},
+            {{"name": "요리명3", "description": "한 줄 소개"}}
+          ]
+        }}
+        """
+        
+        try:
+            resp = self.model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response_text = resp.text.strip()
+            result = json.loads(response_text)
+            
+            style = result.get("style", category_key)
+            dishes = result.get("dishes", [])
+            
+            if not dishes:
+                return {
+                    "answer": f"해당 재료로 만들 수 있는 {category_key} 요리를 찾을 수 없습니다.",
+                    "extracted_ingredients": last_ingredients
+                }
+            
+            response_text = f"{style} 스타일 추천 요리:\n\n"
+            for i, dish in enumerate(dishes, 1):
+                if isinstance(dish, dict):
+                    name = (dish.get("name") or "").strip()
+                    desc = (dish.get("description") or dish.get("note") or dish.get("uses") or "").strip()
+                    line = f"{i}. {name}" if name else f"{i}."
+                    if desc:
+                        line += f" — {desc}"
+                    response_text += line + "\n"
+                else:
+                    response_text += f"{i}. {dish}\n"
+            
+            response_text += "\n원하는 요리의 레시피를 알려드릴까요? 번호(예: 1번)나 요리명을 말씀해 주세요."
+            
+            # 최근 추천 요리 캐시(번호 선택 후속 처리용)
+            self.last_suggested_dishes = [
+                (d.get("name") if isinstance(d, dict) else str(d)).strip()
+                for d in dishes
+                if (isinstance(d, dict) and d.get("name")) or isinstance(d, str)
+            ]
+
+            return {
+                "answer": response_text,
+                "extracted_ingredients": last_ingredients,
+                "style": style,
+                "recommended_dishes": dishes
+            }
+            
+        except Exception as e:
+            logger.error(f"스타일별 재료 기반 요리 추천 오류: {e}")
+            return {
+                "answer": f"{category_key} 스타일 요리 추천 중 오류가 발생했습니다. 다시 시도해주세요.",
+                "extracted_ingredients": last_ingredients
             }
 
     async def get_recipe_optimized(self, dish: str) -> dict:
@@ -776,8 +983,11 @@ class TextAgent:
         """
         
         try:
-            resp = self.model.generate_content(prompt)
-            response_text = self._clean_json_response(resp.text)
+            resp = self.model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response_text = resp.text.strip()
             recipe = json.loads(response_text)
             
             # 조리법 단계 수 제한 (15단계 이하)
@@ -812,8 +1022,11 @@ class TextAgent:
         """
         
         try:
-            resp = self.model.generate_content(prompt)
-            response_text = self._clean_json_response(resp.text)
+            resp = self.model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response_text = resp.text.strip()
             ingredients = json.loads(response_text)
             
             if isinstance(ingredients, list) and len(ingredients) > 0:
@@ -838,8 +1051,11 @@ class TextAgent:
         """
         
         try:
-            resp = self.model.generate_content(prompt)
-            response_text = self._clean_json_response(resp.text)
+            resp = self.model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response_text = resp.text.strip()
             tips = json.loads(response_text)
             
             if isinstance(tips, list) and len(tips) > 0:
@@ -871,8 +1087,11 @@ class TextAgent:
         """
         
         try:
-            resp = self.model.generate_content(prompt)
-            response_text = self._clean_json_response(resp.text)
+            resp = self.model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response_text = resp.text.strip()
             varieties = json.loads(response_text)
             
             if isinstance(varieties, list) and len(varieties) > 0:
@@ -894,12 +1113,9 @@ class TextAgent:
                 "type": "vague_dish"
             }
 
-    def _clean_json_response(self, response_text: str) -> str:
-        """JSON 응답 정리"""
-        response_text = response_text.strip()
-        if "```json" in response_text:
-            response_text = response_text.replace("```json", "").replace("```", "")
-        return response_text
+
+
+
 
     def _parse_recipe_from_text(self, dish: str, text: str) -> dict:
         """자연어 응답에서 레시피 정보 추출"""
@@ -1049,6 +1265,64 @@ class TextAgent:
                 break
         
         return tips if tips else ["조리 팁을 찾을 수 없습니다"]
+
+    async def _handle_selection_if_any(self, message: str) -> dict | None:
+        """사용자가 번호/범위로 선택(예: "1번", "2,3번", "1과 3")했을 때, 최근 추천 리스트에서 요리명을 매핑하여 레시피를 반환.
+        선택이 없으면 None 반환.
+        """
+        import re
+        text = (message or "").strip()
+        if not text:
+            return None
+        # 숫자 존재 여부 확인
+        if not re.search(r"\d", text):
+            return None
+
+        # 최근 추천 없으면 종료
+        if not getattr(self, "last_suggested_dishes", None):
+            return None
+
+        # "1번 2번", "1,3", "1과 3", "2 3 4" 형태 모두 수집
+        indices = re.findall(r"\d+", text)
+        if not indices:
+            return None
+
+        # 중복 제거 및 1-based → 0-based 매핑
+        unique_idxs = []
+        for s in indices:
+            try:
+                n = int(s)
+                if n >= 1 and n <= len(self.last_suggested_dishes) and n not in unique_idxs:
+                    unique_idxs.append(n)
+            except Exception:
+                continue
+
+        if not unique_idxs:
+            return None
+
+        # 선택된 요리명 목록 생성
+        chosen_dishes = [self.last_suggested_dishes[i - 1] for i in unique_idxs]
+
+        # 다건 선택이면 첫 번째만 레시피를 반환하고, 나머지는 선택 목록을 안내
+        main_dish = chosen_dishes[0]
+        recipe = await self.get_recipe_optimized(main_dish)
+
+        # 사용자에게 보여줄 응답 텍스트 구성
+        answer_lines = []
+        if len(chosen_dishes) > 1:
+            answer_lines.append(
+                "여러 개를 선택하셨네요. 먼저 1개 레시피부터 안내드릴게요. 나머지 요리도 원하시면 다시 번호를 말씀해주세요."
+            )
+        answer_lines.append(f"네. {recipe.get('title', main_dish)}의 레시피를 알려드릴게요.")
+
+        self._add_assistant_response("\n".join(answer_lines))
+        self.last_intent = "RECIPE"
+        return {
+            "answer": "\n".join(answer_lines),
+            "food_name": recipe.get("title", main_dish),
+            "ingredients": recipe.get("ingredients", []),
+            "recipe": recipe.get("steps", recipe.get("recipe", []))
+        }
 
 
 # TextAgent 인스턴스 생성
