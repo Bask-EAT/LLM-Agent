@@ -2,6 +2,7 @@ import google.generativeai as genai
 import os
 import json
 import logging
+import time
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 import aiohttp
@@ -30,6 +31,13 @@ class TextAgent:
         self.last_ingredients = []  # 마지막 조회된 재료 리스트 캐시
         self.last_intent = None  # 마지막 처리한 의도
         self.last_suggested_dishes = []  # 마지막 추천한 요리명 리스트
+        self.last_ingredients_ts = 0.0
+        self.last_suggested_ts = 0.0
+        self.cache_ttl_sec = 300  # 5분 TTL
+        self.turn_idx = 0  # 처리한 사용자 턴 수
+        self.last_ingredients_turn = 0  # 재료 캐시가 갱신된 턴 인덱스
+        self.last_style = ""  # 최근 스타일 키
+        self.last_style_ts = 0.0
 
 
     def _add_assistant_response(self, content: str):
@@ -40,9 +48,39 @@ class TextAgent:
         recent = self.conversation_history[-count:]
         return "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent])
 
+    def _is_fresh(self, ts: float) -> bool:
+        if not ts:
+            return False
+        return (time.time() - ts) <= self.cache_ttl_sec
+
+    def _has_explicit_new_intent(self, message: str) -> bool:
+        """사용자가 명시적으로 '새 흐름'을 요청했는지 감지: 캐시 무효화 트리거.
+        예: 새로운/새 요리/새 재료/기존 말고/그냥 프랑스식/랜덤/무작위 등
+        """
+        text = (message or "").lower()
+        keywords = [
+            "새로운", "새 요리", "새 재료", "기존 말고", "그냥 프랑스식", "그냥 이탈리아식",
+            "랜덤", "무작위", "다른 걸", "다른 요리", "새 추천"
+        ]
+        return any(k in text for k in keywords)
+
+    def _is_other_in_same_style(self, message: str) -> bool:
+        """현재 스타일 내에서 다른 것을 요청하는지(예: '다른 거 추천해줘') 판별"""
+        text = (message or "").lower().strip()
+        if not text:
+            return False
+        other_keys = ["다른 거", "다른것", "다른 요리", "다른 메뉴", "또 추천", "좀 더", "more", "another"]
+        return any(k in text for k in other_keys) and bool(self.last_style) and self._is_fresh(self.last_style_ts)
+
+    def _is_cache_valid(self) -> bool:
+        """시간(≤5분) AND 턴(≤3턴) 동시 충족 시 캐시 유효"""
+        time_ok = self._is_fresh(self.last_ingredients_ts)
+        turn_ok = (self.turn_idx - self.last_ingredients_turn) <= 3 if self.last_ingredients_turn else False
+        return time_ok and turn_ok and bool(self.last_ingredients)
+
     def _is_style_followup(self, message: str) -> bool:
         """메시지가 '스타일만' 요청하는 후속인지 판단.
-        최근 발화에 재료기반 추천이 있었고, 현재 메시지에 스타일 키워드만 있고 재료/요리명이 없으면 True.
+        최근 맥락이 재료/레시피/재료목록 중 하나였고, 현재 메시지에 스타일 키워드만 있고 재료/요리 행동어가 없으면 True.
         """
         text = (message or "").lower().strip()
         if not text:
@@ -56,14 +94,15 @@ class TextAgent:
         has_style = any(k in text for k in style_keywords)
         non_style_hints = ["재료", "레시피", "만들", "요리", "준비", "굽", "볶", "끓"]
         has_non_style = any(k in text for k in non_style_hints)
-        # 직전 의도가 재료기반 추천이었다면 후속으로 판단
-        recent_was_ingredients = (self.last_intent == "INGREDIENTS_TO_DISHES")
-        return has_style and not has_non_style and recent_was_ingredients
+        recent_allows_follow = self.last_intent in {"INGREDIENTS_TO_DISHES", "RECIPE", "INGREDIENTS"}
+        return has_style and not has_non_style and recent_allows_follow and bool(self.last_ingredients) and self._is_fresh(self.last_ingredients_ts)
 
 
     async def process_message(self, message: str) -> dict:
         """메인 메시지 처리 함수"""
         try:
+            # 턴 증가
+            self.turn_idx += 1
             # 현재 메시지를 히스토리에 추가
             self.conversation_history.append({"role": "user", "content": message})
 
@@ -71,6 +110,43 @@ class TextAgent:
             selection_result = await self._handle_selection_if_any(message)
             if selection_result is not None:
                 return selection_result
+
+            # 명시 신호 우선: 새 흐름 요청이면 캐시 무효화
+            if self._has_explicit_new_intent(message):
+                self.last_ingredients = []
+                self.last_ingredients_ts = 0.0
+                self.last_ingredients_turn = 0
+                self.last_suggested_dishes = []
+                self.last_suggested_ts = 0.0
+                logger.info("명시 신호 감지 → 캐시 무효화 후 정상 분기로 진행")
+
+            # 동일 스타일 내 '다른 거' 요청 우선: 최근 스타일/재료가 유효하면 같은 스타일로 재추천
+            if self._is_other_in_same_style(message) and self._is_cache_valid():
+                logger.info(f"동일 스타일 재추천: style={self.last_style}, ingredients={self.last_ingredients}")
+                result = await self.recommend_dishes_by_ingredients_with_style(self.last_style, self.last_ingredients)
+                response_text = result.get("answer", "추천을 찾을 수 없습니다.")
+                self._add_assistant_response(response_text)
+                self.last_intent = "INGREDIENTS_TO_DISHES"
+                return {
+                    "answer": response_text,
+                    "food_name": None,
+                    "ingredients": result.get("extracted_ingredients", self.last_ingredients),
+                    "recipe": []
+                }
+
+            # [선제 라우팅] 스타일 후속: 직전 맥락이 재료/레시피/재료목록이고, 메시지가 스타일 키워드만이면
+            if self._is_style_followup(message) and self._is_cache_valid():
+                logger.info("스타일-후속 선제 라우팅 실행: 최근 재료 캐시로 스타일 추천 우회")
+                result = await self.recommend_dishes_by_ingredients_with_style(message, self.last_ingredients)
+                response_text = result.get("answer", "해당 재료로 만들 수 있는 요리를 찾을 수 없습니다.")
+                self._add_assistant_response(response_text)
+                self.last_intent = "INGREDIENTS_TO_DISHES"
+                return {
+                    "answer": response_text,
+                    "food_name": None,
+                    "ingredients": result.get("extracted_ingredients", self.last_ingredients),
+                    "recipe": []
+                }
             
             # 의도 분류 (최적화된 단일 호출)
             intent = await self.classify_intent_optimized(message)
@@ -127,6 +203,12 @@ class TextAgent:
                     
                     self._add_assistant_response(response_text)
                     self.last_intent = "CATEGORY"
+                    # 번호 선택 캐시 저장(한식은 단일 문자열 배열, 그 외는 name 추출)
+                    if category_label == "한식":
+                        self.last_suggested_dishes = [str(x).strip() for x in items if isinstance(x, str) and x.strip()]
+                    else:
+                        self.last_suggested_dishes = [x.get("name", "").strip() for x in items if isinstance(x, dict) and x.get("name")]
+                    self.last_suggested_ts = time.time()
                     return {
                         "answer": response_text,
                         "food_name": None,
@@ -142,6 +224,8 @@ class TextAgent:
                 extracted_ingredients = result.get("extracted_ingredients", [])
                 if extracted_ingredients:
                     self.last_ingredients = extracted_ingredients
+                    self.last_ingredients_ts = time.time()
+                    self.last_ingredients_turn = self.turn_idx
                     logger.info(f"재료 캐시 업데이트: {self.last_ingredients}")
                 
                 self._add_assistant_response(response_text)
@@ -166,6 +250,9 @@ class TextAgent:
                     response_text += f"\n다른 원하시는 {dish} 종류가 있으시면 말씀해주세요!"
                     
                     self._add_assistant_response(response_text)
+                    # 번호 선택 캐시 저장(모호한 하위 종류)
+                    self.last_suggested_dishes = [str(v).strip() for v in varieties if isinstance(v, str) and v.strip()]
+                    self.last_suggested_ts = time.time()
                     return {
                         "answer": response_text,
                         "food_name": dish,
@@ -445,7 +532,7 @@ class TextAgent:
             return ""
 
     async def recommend_dishes_optimized(self, message: str) -> dict:
-        """최적화된 요리 추천: 모호하면 기본 한식, 출력 형식은 카테고리별 다름"""
+        """최적화된 요리 추천: 출력 형식은 카테고리별 다름"""
         # 카테고리별 담당 셰프 및 키워드 매핑
         cuisine_profiles = [
             {"key": "한식", "chef": "강레오, 안성재", "keywords": ["한식", "korean", "코리안"]},
@@ -459,9 +546,10 @@ class TextAgent:
         ]
         lower_msg = message.lower()
         inferred = next((c for c in cuisine_profiles if any(k in lower_msg or k in message for k in c["keywords"])), None)
-        # 모호하면 기본 한식
+        # 모호하면 기본값으로 특정 카테고리를 추정하지 않음
         if inferred is None:
-            inferred = cuisine_profiles[0]
+            logger.info("카테고리 모호: 명시적 국가/스타일이 없어 확인 필요")
+            return {"category": "미정", "items": []}
         category_key = inferred["key"]
         chef = inferred["chef"]
 
@@ -837,6 +925,7 @@ class TextAgent:
                 for d in dishes
                 if (isinstance(d, dict) and d.get("name")) or isinstance(d, str)
             ]
+            self.last_suggested_ts = time.time()
 
             return {
                 "answer": response_text,
@@ -908,7 +997,6 @@ class TextAgent:
             )
             response_text = resp.text.strip()
             result = json.loads(response_text)
-            
             style = result.get("style", category_key)
             dishes = result.get("dishes", [])
             
@@ -938,6 +1026,9 @@ class TextAgent:
                 for d in dishes
                 if (isinstance(d, dict) and d.get("name")) or isinstance(d, str)
             ]
+            self.last_suggested_ts = time.time()
+            self.last_style = style
+            self.last_style_ts = time.time()
 
             return {
                 "answer": response_text,
