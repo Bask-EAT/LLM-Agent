@@ -2,13 +2,14 @@ import uvicorn
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-import random # 모의 데이터를 위해 추가
-# 미리 임베딩 모델과 벡터DB 클라이언트를 초기화해둡니다.
-# from sentence_transformers import SentenceTransformer
-# import pinecone 
-# embedding_model = SentenceTransformer('jhgan/ko-sroberta-multitask')
-# pinecone.init(api_key="YOUR_API_KEY", environment="YOUR_ENV")
-# index = pinecone.Index("YOUR_INDEX_NAME")
+import httpx
+import os
+
+# --- 설정 (파일 상단에 위치) ---
+# 실제 벡터 DB API의 주소를 환경 변수에서 가져옵니다.
+# .env 파일에 VECTOR_DB_API_URL="http://실제_벡터DB_주소" 와 같이 설정해야 합니다.
+VECTOR_DB_API_URL = os.getenv("VECTOR_DB_API_URL", "http://localhost:8000") # 예시: 기본값 설정
+DEFAULT_TOP_K = 10
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -28,55 +29,60 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 모의(Mock) 벡터 검색 로직 ---
-# TODO: 나중에 이 부분을 실제 Vector DB 검색 로직으로 교체합니다.
-def mock_vector_search(query: str, search_type: str):
-    """실제 벡터 검색을 흉내 내는 함수"""
-    logger.info(f"모의 벡터 검색 실행: '{query}' (타입: {search_type})")
-    products = [
-        {"product_name": f"신선한 {query}", "price": random.randint(5000, 15000), "store": "마켓OO"},
-        {"product_name": f"프리미엄 {query} (냉동)", "price": random.randint(10000, 25000), "store": "XX상회"},
-        {"product_name": f"간편 손질 {query}", "price": random.randint(7000, 18000), "store": "온라인OO"},
-    ]
-    return {"query": query, "search_type": search_type, "results": random.sample(products, 2)}
-
-# --- API 엔드포인트 정의 ---
 
 @app.post("/search/text")
 async def search_by_text(request: Request):
-    """텍스트로 재료 상품을 검색합니다."""
-    body = await request.json()
-    query_text = body.get("query_text")
-    if not query_text:
-        raise HTTPException(status_code=400, detail="query_text가 필요합니다.")
-    
-    # --- 🧡 여기가 실제 벡터 검색 로직으로 교체되는 부분입니다 🧡 ---
-    
-    # 1. 사용자 쿼리를 벡터로 변환 (임베딩)
-    # query_vector = embedding_model.encode(query_text).tolist()
+    """
+    텍스트로 재료 상품을 검색합니다.
+    이 엔드포인트는 planning-agent로부터 요청을 받아,
+    실제 벡터 검색 API로 요청을 전달하는 '중개자(Proxy)' 역할을 합니다.
+    """
+    logger.info("=== 💚 [8004 서버] /search/text 요청 받음 💚 ===")
 
-    # 2. 벡터 DB에 유사도 검색 실행
-    # search_response = index.query(
-    #     vector=query_vector,
-    #     top_k=5,  # 5개의 가장 유사한 결과를 가져옵니다.
-    #     include_metadata=True
-    # )
+    try:
+        # 1. planning-agent로부터 받은 요청 본문(body)을 파싱합니다.
+        incoming_body = await request.json()
+        query = incoming_body.get("query")
+        if not query:
+            logger.error("=== 💚 [8004 서버] 오류: 요청 본문에 'query' 필드가 없습니다.")
+            raise HTTPException(status_code=400, detail="'query' 필드가 필요합니다.")
+        
+        logger.info(f"=== 💚 [8004 서버] 수신된 검색어: '{query}' 💚 ===")
+
+        # 2. 실제 벡터 DB API로 보낼 새로운 요청 본문(payload)을 구성합니다.
+        vector_db_payload = {
+            "query": query,
+            "top_k": incoming_body.get("top_k", DEFAULT_TOP_K) # 요청에 top_k가 있으면 사용, 없으면 기본값
+        }
+        target_url = f"{VECTOR_DB_API_URL}/search/text"
+        
+        logger.info(f"=== 💚 [8004 서버] 실제 벡터 DB로 요청 전송 시작. URL: {target_url}, Payload: {vector_db_payload}")
+
+        # 3. httpx를 사용해 실제 벡터 DB API를 비동기적으로 호출합니다.
+        async with httpx.AsyncClient() as client:
+            response = await client.post(target_url, json=vector_db_payload, timeout=30.0)
+            
+            logger.info(f"=== 💚 [8004 서버] 실제 벡터 DB로부터 응답 받음. Status: {response.status_code}")
+            
+            # 응답에 에러가 있으면 예외를 발생시킵니다.
+            response.raise_for_status() 
+            
+            search_result = response.json()
+            logger.info(f"=== 💚 [8004 서버] 최종 검색 결과를 planning-agent로 반환합니다.")
+            
+            return search_result
+        
+    except httpx.HTTPStatusError as e:
+        # 네트워크 또는 원격 API 에러 처리
+        error_message = f"벡터 DB API 호출 중 HTTP 오류 발생: {e.response.status_code} - {e.response.text}"
+        logger.error(f"=== ❌ [8004 서버] {error_message}")
+        raise HTTPException(status_code=502, detail=error_message) # 502 Bad Gateway
     
-    # 3. 검색 결과를 필요한 JSON 형태로 가공
-    # results = []
-    # for match in search_response['matches']:
-    #     results.append({
-    #         "product_name": match['metadata']['product_name'],
-    #         "price": match['metadata']['price'],
-    #         # ... 기타 필요한 메타데이터
-    #     })
-    # search_result = {"query": query_text, "results": results}
-    # -------------------------------------------------------------
-    
-    # 지금은 테스트를 위해 여전히 모의 검색을 사용합니다.
-    search_result = mock_vector_search(query_text, "text") # 최종적으로 이 줄을 위 로직으로 대체!
-    logger.info(f"검색 결과: {search_result}")
-    return search_result
+    except Exception as e:
+        # 기타 예외 처리
+        logger.error(f"=== ❌ [8004 서버] 처리 중 알 수 없는 오류 발생: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="내부 서버 오류가 발생했습니다.")
+
 
 @app.post("/search/image")
 async def search_by_image(request: Request):

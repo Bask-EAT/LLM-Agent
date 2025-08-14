@@ -91,38 +91,38 @@ prompt = ChatPromptTemplate.from_messages([
 
     - **`chatType`이 "chat"일 경우의 JSON 구조:**
       ```json
-      {
+      {{
         "chatType": "chat",
         "answer": "요청에 대한 친절한 답변 (예: 요청하신 레시피입니다.)",
         "recipes": [
-          {
+          {{
             "source": "text 또는 video",
             "food_name": "음식 이름",
             "ingredients": ["재료1", "재료2", ...],
             "recipe": ["요리법1", "요리법2", ...]
-          }
+          }}
         ]
-      }
+      }}
       ```
      
     - **`chatType`이 "cart"일 경우의 JSON 구조:**
       - `search_ingredient_by_text` 도구로 받은 상품 정보를 **아래 형식으로 변환하여 조립**해야 합니다.
       ```json
-      {
+      {{
         "chatType": "cart",
         "answer": "요청에 대한 친절한 답변 (예: '계란' 상품을 찾았습니다.)",
         "recipes": [
-          {
+          {{
             "source": "ingredient_search",
             "food_name": "사용자가 검색한 상품명 (예: 계란)",
             "ingredients": [ 
-                {"product_name": "상품이름A", "price": 10000, ...},
-                {"product_name": "상품이름B", "price": 12000, ...}
+                {{"product_name": "상품이름A", "price": 10000, ...}},
+                {{"product_name": "상품이름B", "price": 12000, ...}}
             ],
             "recipe": []
-          }
+          }}
         ]
-      }
+      }}
       ```
     """),
     MessagesPlaceholder(variable_name="chat_history", optional=True),

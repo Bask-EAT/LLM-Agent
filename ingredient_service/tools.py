@@ -2,12 +2,14 @@
 from langchain_core.tools import tool
 import httpx
 import logging
+import os
 
-# ingredient_service가 실행되는 API 서버 주소
-# 로컬에서 테스트 시 uvicorn으로 실행한 주소를 적어주세요
-API_BASE_URL = "http://127.0.0.1:8004" # <- 이 주소는 실제 환경에 맞게 수정해야 합니다.
+# --- 설정 (파일 상단에 위치) ---
+# ingredient-service (8004번 포트)의 주소
+# .env 파일에 INGREDIENT_SERVICE_URL="http://localhost:8004" 와 같이 설정하는 것을 권장합니다.
+INGREDIENT_SERVICE_URL = os.getenv("INGREDIENT_SERVICE_URL", "http://localhost:8004")
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -15,12 +17,34 @@ logger = logging.getLogger(__name__)
 async def search_ingredient_by_text(query: str) -> dict:
     """사용자가 상품 정보를 찾거나, 장바구니에 상품을 담으려 할 때 사용합니다. '계란 찾아줘', '소금 장바구니에 담아줘' 와 같은 요청을 처리합니다."""
     
-    logging.info(f"=== 🧡search_ingredient_by_text 호출. 검색어: {query}")
+    logging.info(f"=== 🤍search_ingredient_by_text 호출. 검색어: {query}")
+    api_url = f"{INGREDIENT_SERVICE_URL}/search/text"
+    payload = {"query": query} # API 엔드포인트에 맞게 payload 수정
+    logging.info(f"=== 🤍 [Tool Request] ingredient-service 서버로 요청 전송. URL: {api_url}, Payload: {payload}")
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(f"{API_BASE_URL}/search/text", params={"query": query})
-        response.raise_for_status() # 오류가 있으면 예외 발생
-        return response.json()
+    try:
+        # 2. httpx를 사용해 ingredient-service API를 호출합니다.
+        async with httpx.AsyncClient() as client:
+            response = await client.post(api_url, json=payload, timeout=60.0)
+            
+            logging.info(f"=== 🤍 [Tool Response] ingredient-service 서버로부터 응답 받음. Status Code: {response.status_code}")
+            response.raise_for_status() # 오류가 있으면 예외 발생
+            
+            response_data = response.json()
+            logging.info(f"=== 🤍 [Tool Return] 에이전트에게 최종 결과 반환. 데이터: {response_data}")
+            
+            return response_data
+        
+    except httpx.HTTPStatusError as e:
+        error_message = f"ingredient-service 호출 중 HTTP 오류: {e.response.status_code} - {e.response.text}"
+        logger.error(f"--- ❌ [Tool Error] {error_message}")
+        # 에이전트에게 오류를 텍스트로 반환하여, LLM이 문제를 인지하고 다른 행동을 하도록 유도할 수 있습니다.
+        return {"error": error_message}
+    except Exception as e:
+        error_message = f"알 수 없는 오류 발생: {e}"
+        logger.error(f"--- ❌ [Tool Error] {error_message}", exc_info=True)
+        return {"error": error_message}
+
 
 @tool
 async def search_ingredient_by_image(image_b64: str) -> dict:
