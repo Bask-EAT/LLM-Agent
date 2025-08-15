@@ -1,5 +1,3 @@
-# planning_agent.py
-
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents import create_tool_calling_agent, AgentExecutor
@@ -155,37 +153,39 @@ async def run_agent(user_message: str):
     logger.info("--- [STEP 0] Agent Start ---")
     
     try:
-        logger.info("--- [STEP 1] Calling agent_executor.ainvoke... ---")
+        logger.info("--- [STEP 1] agent_executor.ainvoke 호출 중... ---")
         result = await agent_executor.ainvoke({
             "input": user_message,
         })
-        logger.info("--- [STEP 2] agent_executor.ainvoke finished successfully. ---")
+        logger.info("--- [STEP 2] agent_executor.ainvoke가 정상적으로 완료되었습니다. ---")
 
         output_string = result.get("output", "")
-        logger.info(f"--- [STEP 3] Extracted output string. Length: {len(output_string)} chars. ---")
+        logger.info(f"--- [STEP 3] 출력 문자열 추출 완료. 길이: {len(output_string)}자 ---")
         # 로그가 너무 길어지는 것을 막기 위해 앞 200자만 출력
-        logger.debug(f"--- Output preview: {output_string[:200]}...")
+        logger.debug(f"--- 출력 미리보기: {output_string[:200]}...")
 
+        # 최종 결과에서 ```json ... ``` 부분을 추출
         clean_json_string = ""
-        logger.info("--- [STEP 4] Attempting to find JSON block using regex... ---")
+        logger.info("--- [STEP 4] 정규식을 사용해 JSON 블록 찾는 중... ---")
         match = re.search(r"```json\s*(\{.*?\})\s*```", output_string, re.DOTALL)
         
         if match:
             clean_json_string = match.group(1).strip()
-            logger.info("--- [STEP 5a] JSON block found and extracted. ---")
+            logger.info("--- [STEP 5a] JSON 블록을 찾았고 추출했습니다. ---")
         else:
-            logger.warning("--- [STEP 5b] JSON block NOT found. Using the whole string. ---")
+            # 만약 ```json ``` 마크다운을 생성하지 않을 시 전체 문자열 사용 (LLM이 지시를 완전히 따르지 않은 경우일 수 있음)
+            logger.warning("--- [STEP 5b] JSON 블록을 찾지 못했습니다. 전체 문자열을 사용합니다. ---")
             clean_json_string = output_string
         
-        logger.info(f"--- [STEP 6] Attempting to parse the string with json.loads()... ---")
+        logger.info(f"--- [STEP 6] json.loads()로 문자열을 파싱 시도 중... ---")
         parsed_data = json.loads(clean_json_string)
         
-        logger.info(f"--- [STEP 7] json.loads() finished successfully. Data type is: {type(parsed_data)}. ---")
+        logger.info(f"--- [STEP 7] json.loads()가 정상적으로 완료되었습니다. 데이터 타입: {type(parsed_data)} ---")
         
         # 마지막 단계: 이 로그가 찍히면, 함수 자체는 성공적으로 끝난 것입니다.
-        logger.info("--- ✅ [FINAL STEP] All processing is done. Now returning the parsed dictionary. ---")
+        logger.info("--- ✅ [마지막 단계] 모든 처리가 완료되었습니다. 이제 파싱된 딕셔너리를 반환합니다. ---")
         return parsed_data
 
     except Exception as e:
-        logger.error(f"--- 🚨 [CAUGHT EXCEPTION] An exception was caught: {e}", exc_info=True)
+        logger.error(f"--- 🚨 [예외 발생] 예외가 발생했습니다: {e}", exc_info=True)
         raise e
