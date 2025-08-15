@@ -77,7 +77,6 @@ prompt = ChatPromptTemplate.from_messages([
     ---
     ### **2단계: 의도에 따른 도구 선택**
     1단계에서 결정한 `chatType`에 따라 사용할 도구를 선택합니다.
-
     - `chatType`이 **"chat"**이라면:
       - `extract_recipe_from_youtube` 또는 `text_based_cooking_assistant` 도구를 사용해서 레시피 정보를 가져옵니다.
     
@@ -87,6 +86,11 @@ prompt = ChatPromptTemplate.from_messages([
     ---
     ### **3단계: 최종 JSON 조립**
     1, 2단계의 결과를 바탕으로, 아래 규칙에 따라 최종 JSON 객체를 **하나만** 생성합니다.
+
+    ## 도구 호출 규칙(중요)
+    - 사용자가 **여러 요리 레시피**를 한 번에 요청했다면(예: "김치찌개랑 된장찌개 레시피"), 반드시 `text_based_cooking_assistant` 도구를 **요리별로 각각** 호출하세요. 각 호출의 입력은 해당 요리명에 맞게 간단히 가공해도 좋습니다(예: "김치찌개 레시피", "된장찌개 레시피"). 그 결과들을 받은 **순서대로** `recipes` 리스트에 넣으세요.
+    - 사용자가 **번호 선택(예: 1번, 2,3번)** 으로 후속 요청을 했다면, 그 **원문을 그대로** `text_based_cooking_assistant` 에 전달하세요. 이 도구가 번호를 최근 추천 목록에 매핑해 레시피를 돌려줍니다. 받은 결과를 `recipes` 리스트에 추가하세요.
+    - 단순 카테고리/재료 추천 같은 텍스트 응답은 자연스럽게 `answer`에 합치고, 레시피(step/recipe)가 없는 결과는 `recipes`에 넣지 않아도 됩니다.
 
     - **`chatType`이 "chat"일 경우의 JSON 구조:**
       ```json
