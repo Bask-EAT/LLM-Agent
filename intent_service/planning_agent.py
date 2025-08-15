@@ -1,5 +1,3 @@
-# planning_agent.py
-
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents import create_tool_calling_agent, AgentExecutor
@@ -32,12 +30,25 @@ sys.path.append(project_root)
 # 위에서 수정한 파일들로부터 '도구'들을 가져옵니다.
 from text_service.agent import text_based_cooking_assistant
 from video_service.core.extractor import extract_recipe_from_youtube
+from ingredient_service.tools import (
+    search_ingredient_by_text,
+    # search_ingredient_by_image,
+    # search_ingredient_multimodal
+)
 
 # 1. 사용할 도구(Tools) 정의
-tools = [text_based_cooking_assistant, extract_recipe_from_youtube]
+tools = [
+    text_based_cooking_assistant, 
+    extract_recipe_from_youtube,
+    search_ingredient_by_text,
+    # search_ingredient_by_image,
+    # search_ingredient_multimodal
+    ]
 
-# 2. LLM 모델 설정 (Planning을 위해서는 고성능 모델을 추천합니다)
+# 2. LLM 모델 설정
 llm = ChatGoogleGenerativeAI(
+    # 멀티모달 입력을 처리하려면 Vision 모델 사용을 고려해야 할 수 있습니다.
+    # model="gemini-pro-vision",
     model="gemini-2.5-flash", 
     temperature=0, 
     convert_system_message_to_human=True,
@@ -47,49 +58,85 @@ llm = ChatGoogleGenerativeAI(
 # 3. 프롬프트(Prompt) 설정 - 에이전트에게 내리는 지시사항
 prompt = ChatPromptTemplate.from_messages([
     ("system", """
-    당신은 사용자의 요청을 분석하여 최적의 도구를 사용해 답변하는 요리 전문 어시스턴트입니다.
+    당신은 사용자의 요청을 3단계에 걸쳐 처리하는 고도로 체계적인 요리 어시스턴트입니다.
      
-    ## 중요한 작업 원칙
-    1.  사용자 요청에 **YouTube URL과 텍스트 질문이 함께** 들어올 수 있습니다.
-    2.  이 경우, **두 종류의 요청을 모두 처리**해야 합니다.
-        - YouTube URL은 `extract_recipe_from_youtube` 도구로 분석하세요.
-        - 나머지 텍스트 질문은 `text_based_cooking_assistant` 도구로 분석하세요.
-    3.  각 도구를 호출하여 얻은 모든 결과를 빠짐없이 수집해야 합니다.
+    ---
+    ### **1단계: 사용자 의도 분석 (`chatType` 결정)**
+    가장 먼저 사용자의 메시지를 분석하여 핵심 의도가 '요리 대화'인지 '장바구니 관련'인지 판단하고 `chatType`을 결정합니다.
+
+    - **`chatType` = "chat"으로 판단하는 경우:**
+      - 메시지에 YouTube URL이 포함되어 있을 때
+      - "레시피 알려줘", "만드는 법 알려줘" 등 요리법을 직접 물어볼 때
+      - "계란으로 할 수 있는 요리 뭐 있어?" 와 같이 아이디어를 물어볼 때
+
+    - **`chatType` = "cart"으로 판단하는 경우:**
+      - "계란 찾아줘", "소금 정보 알려줘" 와 같이 상품 정보 자체를 물어볼 때
+      - "찾아줘", "얼마야", "가격 알려줘", "정보 알려줘", "구매", "장바구니" 등의 단어가 포함될 때
+      - **"양배추 찾아줘"는 "상품 검색"입니다. "양배추로 만드는 요리"가 "요리 레시피"입니다. 이 둘을 절대 혼동하지 마세요.**
      
-    ## 최종 답변 생성 규칙
-    1.  당신의 최종 목표는 **하나의 JSON 객체**를 생성하는 것입니다.
-    2.  이 JSON 객체는 **"answer"**와 **"recipes"** 라는 두 개의 키를 반드시 가져야 합니다.
-    3.  **"recipes" 키**: 이 값은 레시피 객체들의 **리스트(list)**여야 합니다.
-    4.  **"answer" 키**: 사용자에게 보여줄 친절한 한국어 대답(문자열)을 담습니다.
-    5. **[핵심] 각 도구가 반환한 결과(JSON 객체)를 수정하거나 요약하지 마세요. 받은 그대로를 "recipes" 리스트 안에 차례대로 넣어서 조립만 하세요.** 
-    6. 이 방식은 당신의 작업 부하를 줄여 안정성을 높이기 위함입니다. '종합'이 아닌 '조립'에 집중해주세요.
+    ---
+    ### **2단계: 의도에 따른 도구 선택**
+    1단계에서 결정한 `chatType`에 따라 사용할 도구를 선택합니다.
+    - `chatType`이 **"chat"**이라면:
+      - `extract_recipe_from_youtube` 또는 `text_based_cooking_assistant` 도구를 사용해서 레시피 정보를 가져옵니다.
+    
+    - `chatType`이 **"cart"**이라면:
+      - `search_ingredient_by_text` 도구를 사용해서 상품 정보를 검색합니다.
+     
+    ---
+    ### **3단계: 최종 JSON 조립**
+    1, 2단계의 결과를 바탕으로, 아래 규칙에 따라 최종 JSON 객체를 **하나만** 생성합니다.
 
     ## 도구 호출 규칙(중요)
     - 사용자가 **여러 요리 레시피**를 한 번에 요청했다면(예: "김치찌개랑 된장찌개 레시피"), 반드시 `text_based_cooking_assistant` 도구를 **요리별로 각각** 호출하세요. 각 호출의 입력은 해당 요리명에 맞게 간단히 가공해도 좋습니다(예: "김치찌개 레시피", "된장찌개 레시피"). 그 결과들을 받은 **순서대로** `recipes` 리스트에 넣으세요.
     - 사용자가 **번호 선택(예: 1번, 2,3번)** 으로 후속 요청을 했다면, 그 **원문을 그대로** `text_based_cooking_assistant` 에 전달하세요. 이 도구가 번호를 최근 추천 목록에 매핑해 레시피를 돌려줍니다. 받은 결과를 `recipes` 리스트에 추가하세요.
     - 단순 카테고리/재료 추천 같은 텍스트 응답은 자연스럽게 `answer`에 합치고, 레시피(step/recipe)가 없는 결과는 `recipes`에 넣지 않아도 됩니다.
 
-
-    ## 최종 답변 JSON 구조 예시
-    ```json
-    {{
-      "answer": "네, 요청하신 감바스 파스타와 감자튀김 레시피입니다.",
-      "recipes": [
-        {{
-          "source": "video",
-          "food_name": "감바스 파스타",
-          "ingredients": [...],
-          "recipe": [...]
-        }},
-        {{
-          "source": "text",
-          "food_name": "프로 셰프의 완벽 감자튀김",
-          "ingredients": [...],
-          "recipe": [...]
-        }}
-      ]
-    }}
-    ```
+    - **`chatType`이 "chat"일 경우의 JSON 구조:**
+      ```json
+      {{
+        "chatType": "chat",
+        "answer": "요청에 대한 친절한 답변 (예: 요청하신 레시피입니다.)",
+        "recipes": [
+          {{
+            "source": "text 또는 video",
+            "food_name": "음식 이름",
+            "ingredients": ["재료1", "재료2", ...],
+            "recipe": ["요리법1", "요리법2", ...]
+          }}
+        ]
+      }}
+      ```
+     
+    - **`chatType`이 "cart"일 경우의 JSON 구조:**
+      - **[핵심 규칙]** `search_ingredient_by_text` 도구가 반환한 `results` 리스트에서, 각 상품(객체)마다 **`product_name`, `price`, `image_url`, `product_address`** 4개의 키만 추출하여 `ingredients` 리스트를 만드세요.
+      ```json
+      {{
+        "chatType": "cart",
+        "answer": "요청에 대한 친절한 답변 (예: '계란' 상품을 찾았습니다.)",
+        "recipes": [
+          {{
+            "source": "ingredient_search",
+            "food_name": "사용자가 검색한 상품명 (예: 계란)",
+            "ingredients": [ 
+                {{
+                  "product_name": "양배추 (통)", 
+                  "price": 3720,
+                  "image_url": "https://...",
+                  "product_address": "https://..."
+                }},
+                {{
+                  "product_name": "양배추 (1/2통)", 
+                  "price": 1980,
+                  "image_url": "https://...",
+                  "product_address": "https://..."
+                }}
+            ],
+            "recipe": []
+          }}
+        ]
+      }}
+      ```
     """),
     MessagesPlaceholder(variable_name="chat_history", optional=True),
     ("user", "{input}"),
@@ -110,40 +157,39 @@ async def run_agent(user_message: str):
     logger.info("--- [STEP 0] Agent Start ---")
     
     try:
-        logger.info("--- [STEP 1] Calling agent_executor.ainvoke... ---")
+        logger.info("--- [STEP 1] agent_executor.ainvoke 호출 중... ---")
         result = await agent_executor.ainvoke({
             "input": user_message,
         })
-        logger.info("--- [STEP 2] agent_executor.ainvoke finished successfully. ---")
+        logger.info("--- [STEP 2] agent_executor.ainvoke가 정상적으로 완료되었습니다. ---")
 
         output_string = result.get("output", "")
-        logger.info(f"--- [STEP 3] Extracted output string. Length: {len(output_string)} chars. ---")
+        logger.info(f"--- [STEP 3] 출력 문자열 추출 완료. 길이: {len(output_string)}자 ---")
         # 로그가 너무 길어지는 것을 막기 위해 앞 200자만 출력
-        logger.debug(f"--- Output preview: {output_string[:200]}...")
+        logger.debug(f"--- 출력 미리보기: {output_string[:200]}...")
 
+        # 최종 결과에서 ```json ... ``` 부분을 추출
         clean_json_string = ""
-        logger.info("--- [STEP 4] Attempting to find JSON block using regex... ---")
+        logger.info("--- [STEP 4] 정규식을 사용해 JSON 블록 찾는 중... ---")
         match = re.search(r"```json\s*(\{.*?\})\s*```", output_string, re.DOTALL)
         
         if match:
             clean_json_string = match.group(1).strip()
-            logger.info("--- [STEP 5a] JSON block found and extracted. ---")
+            logger.info("--- [STEP 5a] JSON 블록을 찾았고 추출했습니다. ---")
         else:
-            logger.warning("--- [STEP 5b] JSON block NOT found. Using the whole string. ---")
+            # 만약 ```json ``` 마크다운을 생성하지 않을 시 전체 문자열 사용 (LLM이 지시를 완전히 따르지 않은 경우일 수 있음)
+            logger.warning("--- [STEP 5b] JSON 블록을 찾지 못했습니다. 전체 문자열을 사용합니다. ---")
             clean_json_string = output_string
         
-        logger.info(f"--- [STEP 6] Attempting to parse the string with json.loads()... ---")
-        
-        # ⚠️ 여기가 가장 유력한 충돌 지점입니다.
+        logger.info(f"--- [STEP 6] json.loads()로 문자열을 파싱 시도 중... ---")
         parsed_data = json.loads(clean_json_string)
         
-        logger.info(f"--- [STEP 7] json.loads() finished successfully. Data type is: {type(parsed_data)}. ---")
+        logger.info(f"--- [STEP 7] json.loads()가 정상적으로 완료되었습니다. 데이터 타입: {type(parsed_data)} ---")
         
         # 마지막 단계: 이 로그가 찍히면, 함수 자체는 성공적으로 끝난 것입니다.
-        logger.info("--- ✅ [FINAL STEP] All processing is done. Now returning the parsed dictionary. ---")
+        logger.info("--- ✅ [마지막 단계] 모든 처리가 완료되었습니다. 이제 파싱된 딕셔너리를 반환합니다. ---")
         return parsed_data
 
     except Exception as e:
-        # 이 로그가 찍힌다면, 코드에 잡을 수 있는 예외가 발생한 것입니다.
-        logger.error(f"--- 🚨 [CAUGHT EXCEPTION] An exception was caught: {e}", exc_info=True)
+        logger.error(f"--- 🚨 [예외 발생] 예외가 발생했습니다: {e}", exc_info=True)
         raise e
