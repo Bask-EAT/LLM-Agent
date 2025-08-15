@@ -4,12 +4,20 @@ from pydantic import BaseModel
 import uvicorn
 import logging
 import json
-from agent import TextAgent
 import sys, os
 
+# 경로 설정을 먼저 수행해 절대 임포트가 가능하도록 함
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
-sys.path.append(project_root)
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+# TextAgent 임포트 (절대 → 실패 시 로컬 패키지 대체)
+try:
+    from text_service.agent.core import TextAgent
+except ModuleNotFoundError:
+    from agent.core import TextAgent
+
 from intent_service.planning_agent import run_agent
 
 
@@ -38,53 +46,6 @@ class TextResponse(BaseModel):
     answer: str
     ingredients: list
     recipe: list
-
-# @app.post("/chat", response_model=ShoppingResponse, status_code=status.HTTP_200_OK)
-# async def chat_with_agent(request: Request):
-#     """    
-#     사용자의 모든 메시지를 받아 플래닝 에이전트가 처리합니다.
-#     세션별로 대화 기록을 관리합니다.
-#     """
-#     try:
-#         # 들어오는 데이터 로깅
-#         logger.info(f"=== /chat 엔드포인트 호출됨 ===")
-#         logger.info(f"요청 헤더: {dict(request.headers)}")
-        
-#         # JSON 데이터 직접 받기
-#         body = await request.json()
-#         logger.info(f"받은 JSON 데이터: {body}")
-        
-#         # session_id = body.get("session_id", "default_session") # 클라이언트에서 세션 ID를 보내주면 좋습니다.
-
-#         message = body.get("message")
-#         if not message:
-#             logger.error("message 필드가 없습니다")
-#             raise HTTPException(status_code=400, detail="message 필드가 필요합니다.")
-        
-#         logger.info(f"처리할 메시지: {message}")
-        
-#         # 에이전트 실행 (session_id 추가)
-#         session_id = "default_session"  # 임시로 기본 세션 ID 사용
-#         response_text = await run_agent(message, session_id)
-        
-#         logger.info(f"최종 응답: {response_text}")
-        
-#         # 프론트엔드가 기대하는 형식으로 응답 변환
-#         response_data = {
-#             "answer": response_text,
-#             "ingredients": [],  # 일단 빈 배열로 설정
-#             "recipe": []       # 일단 빈 배열로 설정
-#         }
-#         logger.info(f"반환할 응답 데이터: {response_data}")
-        
-#         return response_data
-        
-#     except json.JSONDecodeError as e:
-#         logger.error(f"JSON 파싱 오류: {e}")
-#         raise HTTPException(status_code=422, detail="잘못된 JSON 형식입니다.")
-#     except Exception as e:
-#         logger.error(f"에이전트 처리 중 오류: {e}", exc_info=True)
-#         raise HTTPException(status_code=500, detail=f"서버 내부 오류가 발생했습니다: {e}")
 
 @app.post("/process", response_model=TextResponse)
 async def process_message(request: TextRequest):
