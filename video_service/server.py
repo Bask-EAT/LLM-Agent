@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List, Union, Literal
 from typing import Optional, List
 import uvicorn
 import logging
@@ -42,13 +43,29 @@ class VideoRequest(BaseModel):
     youtube_url: str
     message: str
 
-class VideoResponse(BaseModel):
-    answer: str
-    food_name: str
-    ingredients: list
-    recipe: list
+class Ingredient(BaseModel):
+    item: str
+    amount: str
+    unit: str
 
-@app.post("/process", response_model=VideoResponse)
+class Product(BaseModel):
+    product_name: str
+    price: float | int
+    image_url: str
+    product_address: str
+
+class RecipeModel(BaseModel):
+    source: Literal["text", "video", "ingredient_search"]
+    food_name: str
+    ingredients: List[Union[Ingredient, Product]]
+    recipe: List[str]
+
+class ChatResponse(BaseModel):
+    chatType: Literal["chat", "cart"]
+    content: str
+    recipes: List[RecipeModel]
+
+@app.post("/process", response_model=ChatResponse)
 async def process_video(request: Request):
     """유튜브 영상 레시피 추출 처리"""
     try:
@@ -69,8 +86,31 @@ async def process_video(request: Request):
         # VideoAgent로 영상 처리
         result = process_video_url(youtube_url)
         logger.info(f"VideoAgent 처리 결과: {result}")
-        
-        return VideoResponse(**result)
+
+        content = str(result.get("answer", "")).strip()
+        food_name = result.get("food_name") or result.get("title") or ""
+        raw_ingredients = result.get("ingredients", [])
+        steps = result.get("recipe") or result.get("steps") or []
+
+        def to_ingredient(obj):
+            if isinstance(obj, dict) and {"item","amount","unit"}.issubset(obj.keys()):
+                return {"item": str(obj.get("item","")), "amount": str(obj.get("amount","")), "unit": str(obj.get("unit",""))}
+            if isinstance(obj, str):
+                return {"item": obj, "amount": "", "unit": ""}
+            return {"item": "", "amount": "", "unit": ""}
+
+        normalized_ings: List[dict] = []
+        if isinstance(raw_ingredients, list):
+            normalized_ings = [to_ingredient(x) for x in raw_ingredients]
+
+        recipe_obj = {
+            "source": "video",
+            "food_name": food_name,
+            "ingredients": normalized_ings,
+            "recipe": steps if isinstance(steps, list) else [],
+        }
+
+        return ChatResponse(chatType="chat", content=content or "", recipes=[recipe_obj])
         
     except json.JSONDecodeError as e:
         logger.error(f"JSON 파싱 오류: {e}")

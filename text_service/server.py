@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List, Union, Literal
 import uvicorn
 import logging
 import json
@@ -42,12 +43,29 @@ text_agent = TextAgent()
 class TextRequest(BaseModel):
     message: str
 
-class TextResponse(BaseModel):
-    answer: str
-    ingredients: list
-    recipe: list
+class Ingredient(BaseModel):
+    item: str
+    amount: str
+    unit: str
 
-@app.post("/process", response_model=TextResponse)
+class Product(BaseModel):
+    product_name: str
+    price: float | int
+    image_url: str
+    product_address: str
+
+class RecipeModel(BaseModel):
+    source: Literal["text", "video", "ingredient_search"]
+    food_name: str
+    ingredients: List[Union[Ingredient, Product]]
+    recipe: List[str]
+
+class ChatResponse(BaseModel):
+    chatType: Literal["chat", "cart"]
+    content: str
+    recipes: List[RecipeModel]
+
+@app.post("/process", response_model=ChatResponse)
 async def process_message(request: TextRequest):
     """텍스트 기반 레시피 검색 처리"""
     try:
@@ -56,8 +74,32 @@ async def process_message(request: TextRequest):
         
         result = await text_agent.process_message(request.message)
         logger.info(f"TextAgent 처리 결과: {result}")
-        
-        return TextResponse(**result)
+
+        # 표준 스키마로 정규화
+        content = str(result.get("answer", "")).strip()
+        food_name = result.get("food_name") or result.get("title") or ""
+        raw_ingredients = result.get("ingredients", [])
+        steps = result.get("recipe") or result.get("steps") or []
+
+        def to_ingredient(obj):
+            if isinstance(obj, dict) and {"item","amount","unit"}.issubset(obj.keys()):
+                return {"item": str(obj.get("item","")), "amount": str(obj.get("amount","")), "unit": str(obj.get("unit",""))}
+            if isinstance(obj, str):
+                return {"item": obj, "amount": "", "unit": ""}
+            return {"item": "", "amount": "", "unit": ""}
+
+        normalized_ings: List[dict] = []
+        if isinstance(raw_ingredients, list):
+            normalized_ings = [to_ingredient(x) for x in raw_ingredients]
+
+        recipe_obj = {
+            "source": "text",
+            "food_name": food_name,
+            "ingredients": normalized_ings,
+            "recipe": steps if isinstance(steps, list) else [],
+        }
+
+        return ChatResponse(chatType="chat", content=content or "", recipes=[recipe_obj])
     except Exception as e:
         logger.error(f"ShoppingAgent 처리 오류: {e}")
         raise HTTPException(status_code=500, detail="레시피 검색 중 오류가 발생했습니다.")

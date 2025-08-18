@@ -1,5 +1,6 @@
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
+from typing import List, Union, Literal
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import httpx
@@ -69,8 +70,35 @@ async def search_by_text(request: Request):
             
             search_result = response.json()
             logger.info(f"=== 💚 [8004 서버] 최종 검색 결과를 planning-agent로 반환합니다.")
-            
-            return search_result
+
+            # 표준 스키마로 정규화 (cart 전용)
+            query = vector_db_payload.get("query", "")
+            items = search_result.get("results", []) if isinstance(search_result, dict) else []
+            products: List[dict] = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                p = {
+                    "product_name": str(it.get("product_name", it.get("name", ""))),
+                    "price": it.get("price", 0),
+                    "image_url": str(it.get("image_url", "")),
+                    "product_address": str(it.get("product_address", "")),
+                }
+                products.append(p)
+
+            payload = {
+                "chatType": "cart",
+                "content": f"'{query}' 관련 상품을 찾았습니다.",
+                "recipes": [
+                    {
+                        "source": "ingredient_search",
+                        "food_name": str(query),
+                        "ingredients": products,
+                        "recipe": [],
+                    }
+                ],
+            }
+            return payload
         
     except httpx.HTTPStatusError as e:
         # 네트워크 또는 원격 API 에러 처리
@@ -92,9 +120,19 @@ async def search_by_image(request: Request):
     if not image_data:
         raise HTTPException(status_code=400, detail="image_data가 필요합니다.")
 
-    # 실제로는 이 부분에서 이미지를 임베딩하여 벡터 검색을 수행합니다.
-    search_result = mock_vector_search("이미지 속 재료", "image")
-    return search_result
+    # 데모: 표준 스키마 빈 카트 응답
+    return {
+        "chatType": "cart",
+        "content": "이미지 검색은 아직 지원되지 않습니다.",
+        "recipes": [
+            {
+                "source": "ingredient_search",
+                "food_name": "",
+                "ingredients": [],
+                "recipe": [],
+            }
+        ],
+    }
 
 @app.post("/search/multimodal")
 async def search_by_multimodal(request: Request):
@@ -105,9 +143,19 @@ async def search_by_multimodal(request: Request):
     if not query_text or not image_data:
         raise HTTPException(status_code=400, detail="query_text와 image_data가 모두 필요합니다.")
 
-    # 실제로는 이 부분에서 이미지와 텍스트를 함께 임베딩하여 벡터 검색을 수행합니다.
-    search_result = mock_vector_search(f"'{query_text}'와 비슷한 이미지 속 재료", "multimodal")
-    return search_result
+    # 데모: 표준 스키마 빈 카트 응답
+    return {
+        "chatType": "cart",
+        "content": "멀티모달 검색은 아직 지원되지 않습니다.",
+        "recipes": [
+            {
+                "source": "ingredient_search",
+                "food_name": query_text or "",
+                "ingredients": [],
+                "recipe": [],
+            }
+        ],
+    }
 
 if __name__ == "__main__":
     # 다른 서비스와 겹치지 않는 새 포트(8004)를 사용합니다.

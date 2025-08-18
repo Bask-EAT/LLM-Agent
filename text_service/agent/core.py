@@ -55,13 +55,12 @@ class TextAgent:
         self.last_style_ts: float = 0.0
 
     def _add_assistant_response(self, content: str):
-        self.conversation_history.append({"role": "assistant", "content": content})
+        # 히스토리 비활성화: 서버는 대화 로그를 저장하지 않음
+        return
 
     def _get_recent_context(self, count: int = 3) -> str:
-        if not self.conversation_history:
-            return "대화 히스토리가 없습니다."
-        recent = self.conversation_history[-count:]
-        return "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent])
+        # 히스토리 비활성화: 항상 빈 컨텍스트 반환
+        return ""
 
     def _is_fresh(self, ts: float) -> bool:
         if not ts:
@@ -102,7 +101,7 @@ class TextAgent:
     async def process_message(self, message: str) -> Dict[str, Any]:
         try:
             self.turn_idx += 1
-            self.conversation_history.append({"role": "user", "content": message})
+            # 히스토리 비활성화: 사용자 메시지 저장하지 않음
 
             selection_result = await self._handle_selection_if_any(message)
             if selection_result is not None:
@@ -200,7 +199,7 @@ class TextAgent:
                 self.last_suggested_turn = self.turn_idx
                 return {"answer": response_text, "food_name": None, "ingredients": [], "recipe": []}
 
-            intent = self.intent_classifier.classify(message, self._get_recent_context(5))
+            intent = self.intent_classifier.classify(message, "")
 
             if intent == "CATEGORY":
                 if self.last_ingredients and self._is_style_followup(message):
@@ -349,7 +348,7 @@ class TextAgent:
                 dish = self._extract_dish_smart(message)
                 ingredient = self._extract_ingredient_to_substitute(message)
                 user_substitute = self._extract_explicit_substitute_name(message)
-                subs = self.substitutions.get_substitutions(dish, ingredient, user_substitute, message, self._get_recent_context(3))
+                subs = self.substitutions.get_substitutions(dish, ingredient, user_substitute, message, "")
                 target_ing = subs.get("ingredient", ingredient or "해당 재료")
                 substitute_name = subs.get("substituteName", user_substitute or "")
                 candidates = subs.get("substitutes", [])
@@ -380,7 +379,7 @@ class TextAgent:
             elif intent == "NECESSITY":
                 dish = self._extract_dish_smart(message)
                 ingredient = self._extract_ingredient_to_substitute(message)
-                result = self.substitutions.get_necessity(dish, ingredient, self._get_recent_context(3))
+                result = self.substitutions.get_necessity(dish, ingredient, "")
                 possible = result.get("possible", False)
                 flavor_change = result.get("flavor_change", "")
                 response_text = f"가능: {'예' if possible else '아니오'}"
