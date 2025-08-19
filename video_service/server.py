@@ -87,7 +87,8 @@ async def process_video(request: Request):
         result = process_video_url(youtube_url)
         logger.info(f"VideoAgent 처리 결과: {result}")
 
-        content = str(result.get("answer", "")).strip()
+        # content 승격: answer → content
+        content = str(result.get("content") or result.get("answer") or "").strip()
         food_name = result.get("food_name") or result.get("title") or ""
         raw_ingredients = result.get("ingredients", [])
         steps = result.get("recipe") or result.get("steps") or []

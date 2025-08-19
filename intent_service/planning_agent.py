@@ -62,19 +62,26 @@ llm = ChatGoogleGenerativeAI(
 )
 
 
-# 프롬프트 1: 도구 선택 전용
+# 프롬프트 1: 도구 선택 전용 - 채팅 히스토리 컨텍스트 지원
 tool_calling_prompt = ChatPromptTemplate.from_messages([
     ("system", """
     당신은 사용자의 요청 의도를 정확히 분석하여, 어떤 도구를 어떻게 호출할지 결정하는 전문가입니다.
+    대화 히스토리가 제공되는 경우, 이전 컨텍스트를 고려하여 사용자의 의도를 더 정확히 파악하세요.
 
     ---
     ### **1단계: 사용자 의도 분석 (`chatType` 결정)**
-    가장 먼저 사용자의 메시지를 분석하여 핵심 의도가 '요리 대화'인지 '장바구니 관련'인지 판단합니다.
-
+    
+    **대화 히스토리가 있는 경우:**
+    - 이전 대화 맥락을 반드시 고려하세요
+    - 사용자가 번호나 짧은 응답("4번", "첫 번째")을 했다면, 이전 AI가 제시한 선택지와 연결하여 이해하세요
+    - 이전에 특정 요리나 상품에 대해 논의했다면, 해당 컨텍스트를 유지하세요
+    
+    **의도 분류:**
     - **'요리 대화'로 판단하는 경우:**
       - 메시지에 YouTube URL이 포함되어 있을 때
       - "레시피 알려줘", "만드는 법 알려줘" 등 요리법을 직접 물어볼 때
       - "계란으로 할 수 있는 요리 뭐 있어?" 와 같이 아이디어를 물어볼 때
+      - **이전에 요리 관련 선택지를 제시했고, 사용자가 번호나 선택을 한 경우**
 
     - **'장바구니 관련'으로 판단하는 경우:**
       - "계란 찾아줘", "소금 정보 알려줘" 와 같이 상품 정보 자체를 물어볼 때
@@ -82,18 +89,20 @@ tool_calling_prompt = ChatPromptTemplate.from_messages([
 
     ---
     ### **2단계: 의도에 따른 도구 선택 및 호출**
-    1단계에서 판단한 의도에 따라 아래 규칙에 맞춰 도구를 호출해야 합니다.
-
-    - '요리 대화' 라면:
+    
+    - **'요리 대화' 라면:**
       - `extract_recipe_from_youtube` 또는 `text_based_cooking_assistant` 도구를 사용합니다.
+      - **컨텍스트가 있는 경우, 전체 대화 맥락을 포함하여 도구에 전달하세요**
 
-    - '장바구니 관련' 이라면:
+    - **'장바구니 관련' 이라면:**
       - `search_ingredient_by_text` 도구를 사용합니다.
 
     ---
     ### **도구 호출 세부 규칙 (중요!)**
     - 사용자가 **여러 요리 레시피**를 한 번에 요청했다면(예: "김치찌개랑 된장찌개 레시피"), 반드시 `text_based_cooking_assistant` 도구를 **요리별로 각각** 호출해야 합니다.
-    - 사용자가 **번호 선택(예: 1번, 2,3번)** 으로 후속 요청을 했다면, 그 **원문을 그대로** `text_based_cooking_assistant`에 전달해야 합니다.
+    - **채팅 히스토리가 있고 사용자가 번호 선택(예: 1번, 2,3번, 4번) 으로 후속 요청을 했다면:**
+      - 이전 대화 맥락을 포함한 전체 대화를 `text_based_cooking_assistant`에 전달해야 합니다
+      - 단순히 "4번"만 전달하지 말고, "이전에 볶음밥 레시피 선택지를 제시했고 사용자가 4번(파인애플 볶음밥)을 선택했음"과 같은 맥락 정보를 포함하여 전달하세요
     """),
     ("user", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -200,10 +209,33 @@ class AgentState(TypedDict):
 
 # 2. LangGraph의 노드(Node)와 엣지(Edge) 정의
 # --- 3개의 전문화된 노드 ---
-# 1. 도구 선택 노드
+# 1. 도구 선택 노드 - 채팅 히스토리 컨텍스트 지원
 def select_tool(state):
     logger.info("--- [LangGraph] 🧠 Node (select_tool) 실행 ---")
-    response = agent.invoke({"input": state["messages"][-1].content, "intermediate_steps": []})
+    
+    # 전체 대화 히스토리를 컨텍스트로 활용
+    messages = state["messages"]
+    if len(messages) > 1:
+        # 여러 메시지가 있는 경우, 대화 히스토리 컨텍스트 구성
+        context_parts = []
+        for i, msg in enumerate(messages):
+            if isinstance(msg, HumanMessage):
+                context_parts.append(f"사용자: {msg.content}")
+            elif isinstance(msg, AIMessage):
+                context_parts.append(f"AI: {msg.content}")
+        
+        # 전체 대화 맥락과 최신 요청을 결합
+        full_context = "\n".join(context_parts[:-1])  # 마지막 메시지 제외한 이전 맥락
+        latest_request = messages[-1].content
+        
+        input_text = f"이전 대화 맥락:\n{full_context}\n\n최신 사용자 요청: {latest_request}"
+        logger.info(f"--- [LangGraph] 대화 히스토리 컨텍스트 포함 ({len(messages)}개 메시지) ---")
+    else:
+        # 단일 메시지인 경우 기존 방식 사용
+        input_text = messages[-1].content
+        logger.info("--- [LangGraph] 단일 메시지 처리 ---")
+    
+    response = agent.invoke({"input": input_text, "intermediate_steps": []})
     logger.info(f"--- [LangGraph] 도구 선택 결과: {response} ---")
     return {"messages": response[0].message_log}
 
@@ -231,6 +263,42 @@ def should_call_tool(state):
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "action"
     return END
+
+
+# 채팅 히스토리를 LangGraph 메시지 형식으로 변환하는 함수
+def convert_chat_history_to_messages(chat_history: list) -> list:
+    """
+    프론트엔드에서 받은 채팅 히스토리를 LangGraph 메시지 형식으로 변환합니다.
+    
+    Expected input format:
+    [
+        {"role": "user", "content": "라멘 레시피 알려줘"},
+        {"role": "assistant", "content": "요청하신 레시피입니다."},
+        {"role": "user", "content": "볶음밥 레시피 알려줘"},
+        {"role": "assistant", "content": "어떤 볶음밥 레시피를 원하시나요?\n\n1. 김치 볶음밥\n2. 새우 볶음밥\n3. 게살 볶음밥\n4. 파인애플 볶음밥\n\n다른 원하시는 볶음밥 종류가 있으시면 말씀해주세요!"},
+        {"role": "user", "content": "4번"}
+    ]
+    """
+    messages = []
+    
+    for msg in chat_history:
+        role = msg.get("role", "").lower()
+        content = msg.get("content", "")
+        
+        if not content:
+            continue
+            
+        if role == "user":
+            messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            messages.append(AIMessage(content=content))
+        else:
+            # 알 수 없는 role은 user로 처리
+            logger.warning(f"알 수 없는 role '{role}', user로 처리합니다.")
+            messages.append(HumanMessage(content=content))
+    
+    logger.info(f"채팅 히스토리를 {len(messages)}개의 LangGraph 메시지로 변환했습니다.")
+    return messages
 
 
 # 4. 그래프(Graph) 생성 및 연결
@@ -264,27 +332,44 @@ app = workflow.compile()
 
 
 
-async def run_agent(user_message: str):
-    """사용자 메시지를 받아 에이전트를 실행하고 결과를 반환합니다."""
+async def run_agent(input_data: dict):
+    """
+    사용자 입력을 받아 에이전트를 실행하고 결과를 반환합니다.
+    input_data: {"message": str} 또는 {"chat_history": list} 형태
+    """
     logger.info("--- [STEP 0] Agent Start ---")
     
     try:
+        # 입력 데이터 처리: 채팅 히스토리 또는 단일 메시지
+        if "chat_history" in input_data:
+            # 채팅 히스토리가 있는 경우
+            chat_history = input_data["chat_history"]
+            logger.info(f"--- [STEP 1a] 채팅 히스토리 처리: {len(chat_history)}개 메시지 ---")
+            messages = convert_chat_history_to_messages(chat_history)
+            
+            # 최신 사용자 메시지가 있는지 확인
+            if not messages or not isinstance(messages[-1], HumanMessage):
+                logger.warning("채팅 히스토리의 마지막 메시지가 사용자 메시지가 아닙니다.")
+                # 빈 사용자 메시지 추가
+                messages.append(HumanMessage(content=""))
+        else:
+            # 단일 메시지 처리 (기존 방식)
+            user_message = input_data.get("message", "")
+            logger.info(f"--- [STEP 1b] 단일 메시지 처리: {user_message} ---")
+            messages = [HumanMessage(content=user_message)]
+        
         # LangGraph 실행
-        logger.info("--- [STEP 1] agent_executor.ainvoke 호출 중... ---")
-        # result = await agent_executor.ainvoke({
-        #     "input": user_message,
-        # })
-        # inputs = {"messages": [HumanMessage(content=user_message)], "tool_call_count": 0}
-        inputs = {"messages": [HumanMessage(content=user_message)]}
+        logger.info("--- [STEP 2] app.ainvoke 호출 중... ---")
+        inputs = {"messages": messages}
         result_state = await app.ainvoke(inputs)
-        logger.info("--- [STEP 2] agent_executor.ainvoke가 정상적으로 완료되었습니다. ---")
+        logger.info("--- [STEP 3] app.ainvoke가 정상적으로 완료되었습니다. ---")
 
         # 결과에서 최종 AI 응답 메시지를 추출합니다.
         # output_string = result.get("output", "")
         final_message = result_state["messages"][-1]
         output_string = final_message.content if isinstance(final_message, AIMessage) else ""
         
-        # logger.info(f"--- [STEP 3] 출력 문자열 추출 완료. 길이: {len(output_string)}자 ---")
+        # logger.info(f"--- [STEP 4] 출력 문자열 추출 완료. 길이: {len(output_string)}자 ---")
         # logger.debug(f"--- 출력 미리보기: {output_string[:200]}...")  # 앞 200자만 로그에 출력
 
         # if not output_string or not output_string.strip().startswith(('{', '[')):
@@ -292,7 +377,7 @@ async def run_agent(user_message: str):
         #      return json.loads('{"chatType": "error", "answer": "죄송합니다, 답변을 생성하는 데 실패했습니다."}')
 
          # --- 디버깅 코드 추가 ---
-        logger.info("--- [STEP 3] LLM의 원본 응답(Raw Output)을 추출했습니다. ---")
+        logger.info("--- [STEP 4] LLM의 원본 응답(Raw Output)을 추출했습니다. ---")
         logger.info(f"\n<<<<<<<<<< RAW OUTPUT START >>>>>>>>>>\n{output_string}\n<<<<<<<<<<< RAW OUTPUT END >>>>>>>>>>>")
         
         if not output_string:
@@ -306,27 +391,27 @@ async def run_agent(user_message: str):
         clean_json_string = ""
 
         # 1. 먼저 마크다운 블록(```json ... ```)이 있는지 확인하고, 있다면 내부의 JSON만 추출합니다.
-        logger.info("--- [STEP 4] 정규식을 사용해 JSON 블록 찾는 중... ---")
+        logger.info("--- [STEP 5] 정규식을 사용해 JSON 블록 찾는 중... ---")
         match = re.search(r"```(json)?\s*(\{.*?\})\s*```", output_string, re.DOTALL)
         
         if match:
             clean_json_string = match.group(2).strip()
-            logger.info("--- [STEP 5a] 마크다운 블록에서 JSON을 성공적으로 추출했습니다. ---")
+            logger.info("--- [STEP 6a] 마크다운 블록에서 JSON을 성공적으로 추출했습니다. ---")
         else:
             # 만약 ```json ``` 마크다운을 생성하지 않을 시 전체 문자열 사용 (LLM이 지시를 완전히 따르지 않은 경우일 수 있음)
-            logger.warning("--- [STEP 5b] JSON 블록을 찾지 못했습니다. 전체 문자열을 사용합니다. ---")
+            logger.warning("--- [STEP 6b] JSON 블록을 찾지 못했습니다. 전체 문자열을 사용합니다. ---")
             clean_json_string = output_string.strip()
 
 
         # --- 디버깅 코드 추가 ---
-        logger.info("--- [STEP 6] 파싱할 최종 JSON 문자열(Cleaned JSON)을 준비했습니다. ---")
+        logger.info("--- [STEP 7] 파싱할 최종 JSON 문자열(Cleaned JSON)을 준비했습니다. ---")
         logger.info(f"\n<<<<<<<<<< CLEAN JSON START >>>>>>>>>>\n{clean_json_string}\n<<<<<<<<<<< CLEAN JSON END >>>>>>>>>>>")
         
 
-        logger.info(f"--- [STEP 7] json.loads()로 문자열을 파싱 시도 중... ---")
+        logger.info(f"--- [STEP 8] json.loads()로 문자열을 파싱 시도 중... ---")
         parsed_data = json.loads(clean_json_string)
         
-        logger.info(f"--- [STEP 8] json.loads()가 정상적으로 완료되었습니다. 데이터 타입: {type(parsed_data)} ---")
+        logger.info(f"--- [STEP 9] json.loads()가 정상적으로 완료되었습니다. 데이터 타입: {type(parsed_data)} ---")
         
         # 마지막 단계: 이 로그가 찍히면, 함수 자체는 성공적으로 끝난 것입니다.
         logger.info("--- ✅ [마지막 단계] 모든 처리가 완료되었습니다. 이제 파싱된 딕셔너리를 반환합니다. ---")

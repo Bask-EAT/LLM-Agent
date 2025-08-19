@@ -189,14 +189,15 @@ def count_youtube_urls(message: str) -> int:
 # (서버 재시작 시 초기화됨. 영구 보관이 필요하면 Redis나 DB 사용)
 jobs = {}
 
-async def run_agent_and_store_result(job_id: str, user_message: str):
+async def run_agent_and_store_result(job_id: str, input_data: dict):
     """
     백그라운드에서 에이전트를 실행하고 결과를 jobs 딕셔너리에 저장하는 함수
+    input_data: {"message": str} 또는 {"chat_history": list} 형태
     """
     logger.info(f"=== 🤍Background-Task-{job_id}: 작업 시작. ===")
     jobs[job_id] = {"status": "processing", "start_time": time.time()}
     try:
-        result = await run_agent(user_message)
+        result = await run_agent(input_data)
         logger.info(f"=== 🤍 Agent 최종 응답: {result} 🤍 ===")
         jobs[job_id] = {"status": "completed", "result": result}
         logger.info(f"=== 🤍Background-Task-{job_id}: 작업 완료. ===")
@@ -213,17 +214,33 @@ async def chat_with_agent(request: Request, background_tasks: BackgroundTasks):
     사용자 요청을 받아 작업을 백그라운드에 등록하고 즉시 작업 ID를 반환합니다.
     """
     try:
+        print(request)
+        
+        # 1. 요청 바디 파싱 - 단일 메시지 또는 채팅 히스토리 지원
         body = await request.json()
         logger.info(f"=== 🤍intent_service에서 /chat 엔드포인트 호출됨🤍 ===")
+        
+        # 채팅 히스토리 또는 단일 메시지 처리
         user_message = body.get("message")
-        logger.info(f"=== 🤍사용자 메시지: {user_message}")
-        if not user_message:
-            raise HTTPException(status_code=400, detail="message가 필요합니다.")
+        chat_history = body.get("chat_history", [])
+        
+        # 채팅 히스토리가 있으면 우선 사용, 없으면 단일 메시지 사용
+        if chat_history:
+            logger.info(f"=== 🤍채팅 히스토리 수신: {len(chat_history)}개 메시지")
+            # 최신 메시지 추출 (유튜브 링크 검증용)
+            latest_message = chat_history[-1].get("content", "") if chat_history else ""
+            input_data = {"chat_history": chat_history}
+        else:
+            logger.info(f"=== 🤍단일 사용자 메시지: {user_message}")
+            if not user_message:
+                raise HTTPException(status_code=400, detail="message 또는 chat_history가 필요합니다.")
+            latest_message = user_message
+            input_data = {"message": user_message}
 
 
         # --- 👇 여기가 바로 추가된 유튜브 링크 개수 검사 로직 👇 ---
-        if count_youtube_urls(user_message) > 1:
-            logger.warning(f"요청 거부: 메시지에 유튜브 링크가 2개 이상 포함됨 - {user_message}")
+        if count_youtube_urls(latest_message) > 1:
+            logger.warning(f"요청 거부: 메시지에 유튜브 링크가 2개 이상 포함됨 - {latest_message}")
             # 400 Bad Request 에러를 발생시켜 사용자에게 알립니다.
             raise HTTPException(
                 status_code=400,
@@ -235,7 +252,7 @@ async def chat_with_agent(request: Request, background_tasks: BackgroundTasks):
         job_id = str(uuid.uuid4()) # 고유한 작업 ID 생성
         
         # 백그라운드에서 run_agent_and_store_result 함수를 실행하도록 등록
-        background_tasks.add_task(run_agent_and_store_result, job_id, user_message)
+        background_tasks.add_task(run_agent_and_store_result, job_id, input_data)
         
         # 클라이언트에게는 작업 ID를 즉시 반환
         return JSONResponse(status_code=202, content={"job_id": job_id})

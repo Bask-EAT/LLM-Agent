@@ -75,8 +75,8 @@ async def process_message(request: TextRequest):
         result = await text_agent.process_message(request.message)
         logger.info(f"TextAgent 처리 결과: {result}")
 
-        # 표준 스키마로 정규화
-        content = str(result.get("answer", "")).strip()
+        # 표준 스키마로 정규화 (content 우선: answer → content로 승격)
+        content = str(result.get("content") or result.get("answer") or "").strip()
         food_name = result.get("food_name") or result.get("title") or ""
         raw_ingredients = result.get("ingredients", [])
         steps = result.get("recipe") or result.get("steps") or []
