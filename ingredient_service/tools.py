@@ -51,7 +51,8 @@ async def search_ingredient_by_text(query: str) -> dict:
 async def search_ingredient_by_image(image_b64: str) -> dict:
     """사용자가 '이미지'만으로 재료나 상품 구매 정보를 물어볼 때 사용합니다. 이미지 자체에 대한 질문일 때 사용하세요."""
     async with httpx.AsyncClient() as client:
-        response = await client.post(f"{API_BASE_URL}/search/image", params={"image_b64": image_b64})
+        payload = {"image_data": image_b64}
+        response = await client.post(f"{INGREDIENT_SERVICE_URL}/search/image", json=payload)
         response.raise_for_status()
         return response.json()
 
