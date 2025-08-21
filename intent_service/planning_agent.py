@@ -1,12 +1,13 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, ToolMessage
 from langchain_core.agents import AgentAction, AgentFinish
+from langchain_core.messages.tool import ToolCall
 from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, END
-from typing import TypedDict, Sequence, Annotated
+from typing import TypedDict, Sequence, Optional
 import operator
+from langchain_core.runnables import RunnableConfig
 
 import sys
 import os
@@ -53,81 +54,36 @@ tools = [
 
 # 2. LLM 모델 설정
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash", 
+    model="gemini-2.5-pro", 
     temperature=0, 
-    convert_system_message_to_human=True,
     google_api_key=GEMINI_API_KEY,
     timeout=60,  # <-- ⭐️ 이 부분을 추가해 주세요! (단위: 초)
 )
 
 
 # 프롬프트 1: 도구 선택 전용 - 채팅 히스토리 컨텍스트 지원
-# tool_calling_prompt = ChatPromptTemplate.from_messages([
-#     ("system", """
-#     당신은 사용자의 요청 의도를 정확히 분석하여, 어떤 도구를 어떻게 호출할지 결정하는 전문가입니다.
-#     대화 히스토리가 제공되는 경우, 이전 컨텍스트를 고려하여 사용자의 의도를 더 정확히 파악하세요.
-
-#     ---
-#     ### **1단계: 사용자 의도 분석 (`chatType` 결정)**
-     
-#     - 메시지가 텍스트이면 기존 규칙 적용
-#     - 메시지가 이미지이면:
-#       - 장바구니 관련이라면: `search_ingredient_by_image` 호출
-#       - 요리 재료 확인 목적이면: `search_ingredient_by_image` 호출
-#       - 반드시 이미지 URL이나 base64 형태의 입력 정보를 도구에 전달
-    
-#     **대화 히스토리가 있는 경우:**
-#     - 이전 대화 맥락을 반드시 고려하세요
-#     - 사용자가 번호나 짧은 응답("4번", "첫 번째")을 했다면, 이전 AI가 제시한 선택지와 연결하여 이해하세요
-#     - 이전에 특정 요리나 상품에 대해 논의했다면, 해당 컨텍스트를 유지하세요
-    
-#     **의도 분류:**
-#     - **'요리 대화'로 판단하는 경우:**
-#       - 메시지에 YouTube URL이 포함되어 있을 때
-#       - "레시피 알려줘", "만드는 법 알려줘" 등 요리법을 직접 물어볼 때
-#       - "계란으로 할 수 있는 요리 뭐 있어?" 와 같이 아이디어를 물어볼 때
-#       - **이전에 요리 관련 선택지를 제시했고, 사용자가 번호나 선택을 한 경우**
-
-#     - **'장바구니 관련'으로 판단하는 경우:**
-#       - "계란 찾아줘", "소금 정보 알려줘" 와 같이 상품 정보 자체를 물어볼 때
-#       - "찾아줘", "얼마야", "가격 알려줘", "정보 알려줘", "구매", "장바구니" 등의 단어가 포함될 때
-
-#     ---
-#     ### **2단계: 의도에 따른 도구 선택 및 호출**
-    
-#     - **'요리 대화' 라면:**
-#       - `extract_recipe_from_youtube` 또는 `text_based_cooking_assistant` 도구를 사용합니다.
-#       - **컨텍스트가 있는 경우, 전체 대화 맥락을 포함하여 도구에 전달하세요**
-#       - 이미지를 통한 재료 확인이면 `search_ingredient_by_image` 사용
-
-#     - **'장바구니 관련' 이라면:**
-#       - 텍스트 상품 검색: `search_ingredient_by_text`
-#       - 이미지 상품 검색: `search_ingredient_by_image`
-
-#     ---
-#     ### **도구 호출 세부 규칙 (중요!)**
-#     - 사용자가 **여러 요리 레시피**를 한 번에 요청했다면(예: "김치찌개랑 된장찌개 레시피"), 반드시 `text_based_cooking_assistant` 도구를 **요리별로 각각** 호출해야 합니다.
-#     - **채팅 히스토리가 있고 사용자가 번호 선택(예: 1번, 2,3번, 4번) 으로 후속 요청을 했다면:**
-#       - 이전 대화 맥락을 포함한 전체 대화를 `text_based_cooking_assistant`에 전달해야 합니다
-#       - 단순히 "4번"만 전달하지 말고, "이전에 볶음밥 레시피 선택지를 제시했고 사용자가 4번(파인애플 볶음밥)을 선택했음"과 같은 맥락 정보를 포함하여 전달하세요
-#     """),
-#     ("user", "{input}"),
-#     MessagesPlaceholder(variable_name="agent_scratchpad"),
-# ])
-# -------------------------------------------------------------------------------
-# 프롬프트 1: 도구 선택 전용 -> 극도로 단순화된 한국어 버전
 tool_calling_prompt = ChatPromptTemplate.from_messages([
     ("system", """
-당신은 사용자의 요청을 올바른 도구로 연결하는 라우팅 전문가입니다. 당신의 유일한 임무는 사용자의 입력을 바탕으로 올바른 도구를 선택하는 것입니다. 질문에 직접 답변하지 마세요.
+    당신은 사용자의 요청 의도를 정확히 분석하여, 어떤 도구를 어떻게 호출할지 결정하는 전문가입니다.
 
-- 사용자가 이미지를 제공하면, 반드시 `search_ingredient_by_image` 도구를 사용해야 합니다.
-- 사용자가 YouTube URL을 제공하면, 반드시 `extract_recipe_from_youtube` 도구를 사용해야 합니다.
-- 사용자가 텍스트만으로 상품을 찾아달라고 요청하면, 반드시 `search_ingredient_by_text` 도구를 사용해야 합니다.
-- 요리나 레시피에 대한 그 외 모든 질문에는, 반드시 `text_based_cooking_assistant` 도구를 사용해야 합니다.
-"""),
-    ("user", "{input}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ---
+    ### **1단계: 사용자 의도 분석 및 도구 결정**
+     
+    - 사용자의 메시지에 **"[사용자가 이미지를 첨부했습니다]"** 라는 텍스트가 포함되어 있다면, 다른 텍스트 내용과 상관없이 **반드시** `search_ingredient_by_image` 도구를 호출해야 합니다. 이때 `image_b64` 인자는 빈 문자열("")로 호출하세요. 시스템이 나중에 실제 데이터를 채워 넣을 것입니다.
+    - 사용자의 메시지에 **YouTube URL**이 포함되어 있다면, `extract_recipe_from_youtube` 도구를 호출하세요.
+    - '상품 정보'나 '구매' 관련 텍스트 요청은 `search_ingredient_by_text` 도구를 호출하세요.
+    - 그 외의 모든 '요리 관련 대화'는 `text_based_cooking_assistant` 도구를 호출하세요.
+
+    ---
+    ### **2단계: 도구 호출 규칙**
+
+    - 사용자가 **여러 요리 레시피**를 한 번에 요청했다면(예: "김치찌개랑 된장찌개 레시피"), 반드시 `text_based_cooking_assistant` 도구를 **요리별로 각각** 호출해야 합니다.
+    """),
+    MessagesPlaceholder(variable_name="messages"),
+    MessagesPlaceholder(variable_name="agent_scratchpad")
 ])
+
+
 
 
 # 3. 프롬프트(Prompt) 설정 - 에이전트에게 내리는 지시사항
@@ -212,130 +168,228 @@ json_generation_prompt = ChatPromptTemplate.from_messages([
 ])
 
 
-# # 4. 에이전트 및 실행기 생성
-# agent = create_tool_calling_agent(llm, tools, prompt)
-# agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
-
-# # 대화 기록을 관리하기 위한 간단한 인메모리 저장소
-# chat_history_store = {}
 
 
 #-----------------------------------------------------------------------------------------------
 # create_tool_calling_agent는 LLM이 도구 사용을 '결정'하게 만드는 부분입니다.
 # 이 부분은 LangChain Core 기능이므로 변경이 없습니다.
-agent = create_tool_calling_agent(llm, tools, tool_calling_prompt)
+# agent = create_tool_calling_agent(llm, tools, tool_calling_prompt)
     
-# 1. 에이전트 상태(State) 정의
+# 4. LangGraph 구성
+# LangGraph 패턴에 더 적합하도록, LLM에 도구를 바인딩하고 프롬프트와 연결합니다.
+llm_with_tools = llm.bind_tools(tools)
+agent_runnable = tool_calling_prompt | llm_with_tools
 # 에이전트가 작업하는 동안 유지하고 업데이트할 데이터 구조입니다.
 class AgentState(TypedDict):
-    # 'messages'는 대화 기록을 담습니다. operator.add는 새 메시지를 리스트에 추가합니다.
-    messages: Annotated[Sequence[BaseMessage], operator.add]
+    messages: Sequence[BaseMessage]
+    # 👇 이 필드를 추가해주세요!
+    image_b64: Optional[str]
+    tool_output: Optional[str]
 
 
 # 2. LangGraph의 노드(Node)와 엣지(Edge) 정의
-# --- 3개의 전문화된 노드 ---
-# 1. 도구 선택 노드 - 채팅 히스토리 컨텍스트 지원
+# 1). 도구 선택 노드 - 채팅 히스토리 컨텍스트 지원
 async def select_tool(state):
     logger.info("--- [LangGraph] 🧠 Node (select_tool) 실행 ---")
-    
-    # 전체 대화 히스토리를 컨텍스트로 활용
     messages = state["messages"]
-    # ---------------아래내용 일단 주석처리하고 버그 확인용 코드 추가함------------------
-    # if len(messages) > 1:
-    #     # 여러 메시지가 있는 경우, 대화 히스토리 컨텍스트 구성
-    #     context_parts = []
-    #     for i, msg in enumerate(messages):
-    #         if isinstance(msg, HumanMessage):
-    #             context_parts.append(f"사용자: {msg.content}")
-    #         elif isinstance(msg, AIMessage):
-    #             context_parts.append(f"AI: {msg.content}")
+    logger.info(f"--- [LangGraph] LLM에 전달할 메시지: {messages} ---")
+
+    try:
+        logger.info("--- [LangGraph] ⏳ agent_runnable.ainvoke 호출 시작... (이 단계에서 외부 API 호출로 인해 시간이 소요될 수 있습니다) ---")
+        response_message = await agent_runnable.ainvoke({
+            "messages": messages,
+            "agent_scratchpad": []
+        })
+        logger.info("--- [LangGraph] ✅ agent_runnable.ainvoke 호출 완료. ---")
+        logger.info(f"--- [LangGraph] 도구 선택 결과: {response_message} ---")
+        # 기존 메시지 기록에 새로운 응답 메시지를 추가하여 반환합니다.
+        # 이렇게 해야 대화의 전체 맥락이 유지됩니다.
+        return {"messages": state["messages"] + [response_message]}
+    
+    except Exception as e:
+        logger.error(f"--- [LangGraph] 🚨 agent_runnable.ainvoke 호출 중 심각한 오류 발생! 🚨 ---")
+        # 💡 여기가 핵심! 예외 객체 'e'와 함께 스택 트레이스를 함께 로깅합니다.
+        # 'MALFORMED_FUNCTION_CALL' 같은 오류의 경우, LLM이 생성하려 했던 텍스트가 여기에 포함될 수 있습니다.
+        logger.error(f"오류 내용: {e}", exc_info=True)
         
-    #     # 전체 대화 맥락과 최신 요청을 결합
-    #     full_context = "\n".join(context_parts[:-1])  # 마지막 메시지 제외한 이전 맥락
-    #     latest_request = messages[-1].content
+        # 이 예시에서는 예외를 다시 발생시켜 실행을 중단합니다.
+        raise e
+
+
+# 2). 이미지 데이터 주입 노드 - 실제 도구(tool_node)를 실행하기 전에 AgentState에 저장해 둔 이미지 데이터를 도구 호출 정보에 주입하는 중간 다리 역할을 하는 노드.
+def inject_image_data(state: AgentState) -> dict:
+    """
+    select_tool 단계에서 생성된 도구 호출(tool_calls)을 확인하고,
+    search_ingredient_by_image 호출이 있다면 state에 저장된 image_b64 데이터를 주입합니다.
+    변경이 필요 없거나 불가능한 경우, 빈 딕셔너리를 반환하여 상태를 그대로 유지합니다.
+    """
+    logger.info("--- [LangGraph] 💉 Node (inject_image_data) 실행 ---")
+
+    image_to_inject = state.get("image_b64")
+    logger.info(f"--- [LangGraph] 💉 주입할 이미지 데이터: {image_to_inject} ---")
+
+    if not image_to_inject:
+        logger.warning("--- [LangGraph] 💉 주입할 이미지 데이터가 없습니다 ---")
+        return {**state, "messages": state["messages"]}
+    
+    # 가장 마지막 메시지 (AIMessage)를 가져옵니다.
+        logger.warning("--- [LangGraph] 💉 주입할 이미지 데이터가 없으므로, 아무 작업도 수행하지 않습니다. ---")
+        return {} # 변경 사항 없음을 명시적으로 알림
+    last_message = state["messages"][-1]
+    # logger.info(f"--- [LangGraph] 💉 마지막 메시지: {last_message} ---")
+    
+    # # state에 이미지 데이터가 있고, 마지막 메시지에 tool_calls가 있을 때만 작동
+    # if image_to_inject and last_message.tool_calls:
+    #     # 새로운 tool_calls 리스트를 만듭니다.
+    #     new_tool_calls = []
+    #     for tool_call in last_message.tool_calls:
+    #         # 이미지 검색 도구일 경우
+    #         if tool_call["name"] == "search_ingredient_by_image":
+    #             logger.info(f"--- [LangGraph] 👉 search_ingredient_by_image 호출에 이미지 데이터 주입 ---")
+    #             # 기존 args를 복사하고 image_b64 값을 덮어씁니다.
+    #             new_args = tool_call["args"].copy()
+    #             new_args["image_b64"] = image_to_inject
+
+    #             # 💡 [수정] 일반 딕셔너리 대신 LangChain의 공식 ToolCall 객체를 생성하여 안정성을 높입니다.
+    #             new_tool_calls.append(
+    #                 ToolCall(name=tool_call["name"], args=new_args, id=tool_call["id"])
+    #             )
+    #         else:
+    #             # 다른 도구는 그대로 추가
+    #             new_tool_calls.append(tool_call)
         
-    #     input_text = f"이전 대화 맥락:\n{full_context}\n\n최신 사용자 요청: {latest_request}"
-    #     logger.info(f"--- [LangGraph] 대화 히스토리 컨텍스트 포함 ({len(messages)}개 메시지) ---")
-    # else:
-    #     # 단일 메시지인 경우 기존 방식 사용
-    #     input_text = messages[-1].content
-    #     logger.info("--- [LangGraph] 단일 메시지 처리 ---")
-    
-    # response = await agent.ainvoke({"input": input_text, "intermediate_steps": []})
-    # logger.info(f"--- [LangGraph] 도구 선택 결과: {response} ---")
-    # return {"messages": response[0].message_log}
-    # ------------------------------------------------------------
-    # ⭐️⭐️⭐️ 중요 버그 수정 ⭐️⭐️⭐️
-    # 이전 코드에서는 이미지/텍스트 복합 메시지(HumanMessage)를 텍스트로만 변환하면서
-    # 이미지 데이터가 유실되었습니다. HumanMessage 객체 자체를 넘겨야 합니다.
-    # 따라서 복잡한 input_text 생성 로직 대신, 마지막 메시지를 그대로 사용합니다.
-    last_message = messages[-1]
+    #     # 1. 기존 메시지 리스트에서 마지막 AI Message를 제거합니다.
+    #     messages_without_last = state["messages"][:-1]
+    if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
+        logger.warning("--- [LangGraph] 💉 마지막 메시지에 tool_calls가 없으므로, 아무 작업도 수행하지 않습니다. ---")
+        return {} # 변경 사항 없음
 
-    logger.info(f">>> 지금부터 LLM (agent.ainvoke)을 호출합니다. 여기서 멈추는지 확인하세요... Input Type: {type(last_message)}")
-    
-    # 수정된 부분: input_text 대신 last_message 객체를 input으로 전달
-    response = await agent.ainvoke({"input": last_message, "intermediate_steps": []})
-    logger.info(f"LLM 원본 응답: {response.content}")
-    
-    logger.info(">>> LLM 호출이 성공적으로 완료되었습니다!") # 이 로그가 보인다면 멈춤 현상 해결!
+    needs_update = False
+    new_tool_calls = []
+    for tool_call in last_message.tool_calls:
+        if tool_call["name"] == "search_ingredient_by_image":
+            logger.info(f"--- [LangGraph] 👉 search_ingredient_by_image 호출에 이미지 데이터 주입 ---")
+            needs_update = True
+            new_args = tool_call["args"].copy()
+            new_args["image_b64"] = image_to_inject
+            new_tool_calls.append(
+                ToolCall(name=tool_call["name"], args=new_args, id=tool_call["id"])
+            )
+        else:
+            # 다른 도구는 그대로 추가
+            new_tool_calls.append(tool_call)
 
-    # response는 AgentAction 또는 AgentFinish 객체를 포함할 수 있습니다.
-    # LangGraph 상태에 맞게 AIMessage로 변환하여 추가해야 합니다.
-    if isinstance(response, AgentFinish):
-        # 도구를 호출하지 않고 끝나는 경우, 결과를 AIMessage로 변환
-        logger.info(f"--- [LangGraph] Agent가 도구 호출 없이 종료. 결과: {response.return_values}")
-        return {"messages": [AIMessage(content=response.return_values.get('output', ''))]}
-        # return {"messages": [AIMessage(content=response.return_values['output'])]}
-    
-    # 도구를 호출하는 경우 (AgentAction)
-    # create_tool_calling_agent는 tool_calls를 포함한 AIMessage를 생성해줍니다.
-    # 하지만 여기서는 직접 AIMessage를 구성해야 할 수 있습니다.
-    # response 객체 구조를 보고 AIMessage를 생성합니다.
-    # AgentExecutor가 해주던 역할을 직접 구현하는 단계입니다.
-    # AgentAction 객체를 AIMessage의 tool_calls 형식으로 변환합니다.
-    # AgentAction은 단일 도구 호출을 나타냅니다.
-    logger.info(f"--- [LangGraph] Agent가 도구 호출 결정: {response.tool}")
-    
-    # create_tool_calling_agent의 결과는 이미 AIMessage 형태일 수 있습니다.
-    # LangChain 버전에 따라 다를 수 있으므로 response의 타입을 확인하는 것이 좋습니다.
-    # 여기서는 response가 tool_calls를 가진 AIMessage라고 가정합니다.
-    
-    # agent.invoke의 결과가 AgentAction/AgentFinish 이므로 AIMessage로 변환이 필요
-    # tool_calls = []
-    # if isinstance(response, AgentAction):
-    #      tool_calls.append({
-    #          "name": response.tool,
-    #          "args": response.tool_input,
-    #          "id": response.log.split('tool_call_')[-1].strip() if 'tool_call_' in response.log else "call_1234"
-    #      })
-    tool_calls = [{
-        "name": response.tool,
-        "args": response.tool_input,
-        "id": "call_" + os.urandom(4).hex() # 임의의 호출 ID 생성
-    }]
+    # 이미지 주입이 실제로 일어났을 때만 메시지 리스트를 교체합니다.
+    if needs_update:
+        logger.info("--- [LangGraph] 💉 이미지 데이터 주입 완료. 메시지 상태를 업데이트합니다. ---")
 
-    ai_message_with_tool_calls = AIMessage(content="", tool_calls=tool_calls)
-    
-    logger.info(f"--- [LangGraph] 도구 선택 결과: {ai_message_with_tool_calls} ---")
-    return {"messages": [ai_message_with_tool_calls]}
+        # 2. 새로운 tool_calls로 완전히 새로운 AIMessage 객체를 만듭니다.
+        new_ai_message = AIMessage(
+            content=last_message.content,
+            tool_calls=new_tool_calls,
+            id=last_message.id,
+        )
+
+         # 3. 메시지 리스트에 새로운 AI Message를 추가합니다.
+        final_messages = state["messages"][:-1] + [new_ai_message]
+        
+        logger.info(f"--- [LangGraph] 👉 데이터 주입 후 최종 메시지 상태: {final_messages}")
+        
+        # 4. LangGraph에 수정된 'messages'만 반환합니다.
+        return {"messages": final_messages}
+
+    # 주입할 도구를 찾지 못한 경우
+    logger.warning("--- [LangGraph] 💉 이미지 주입이 필요한 도구 호출을 찾지 못했습니다. ---")
+    return {}
 
 
-# 2. Tool 노드: 미리 만들어진 ToolNode를 사용합니다.
-tool_node = ToolNode(tools)
+# # 3). Tool 노드: 미리 만들어진 ToolNode를 사용합니다.
+# tool_node = ToolNode(tools)
+# 3). [변경] 직접 만드는 Tool 실행 노드
+async def custom_tool_node(state: AgentState, config: RunnableConfig):
+    """
+    ToolNode를 대체하는 커스텀 노드.
+    Tool 실행 후 ToolMessage를 생성하는 대신, 결과 문자열을 state['tool_output']에 저장합니다.
+    """
+    logger.info("--- [LangGraph] 🛠️ Node (custom_tool_node) 실행 ---")
+    
+    # 마지막 메시지에서 tool_calls를 가져옵니다.
+    last_message = state["messages"][-1]
+    tool_calls = last_message.tool_calls
+
+    # Tool 이름과 인자를 매핑한 딕셔너리를 만듭니다.
+    tool_map = {tool.name: tool for tool in tools}
+
+    # 각 tool_call을 비동기적으로 실행합니다.
+    call_responses = []
+    for call in tool_calls:
+        tool_to_call = tool_map.get(call["name"])
+        if tool_to_call:
+            # config를 함께 전달해주는 것이 좋습니다 (LangSmith 추적 등에 사용될 수 있음)
+            response = await tool_to_call.ainvoke(call["args"], config=config)
+            call_responses.append(response)
+        else:
+            call_responses.append(f"Error: Tool '{call['name']}' not found.")
+    
+    # 여기서는 Tool이 하나만 호출된다고 가정하고 첫 번째 결과만 사용합니다.
+    # 여러 Tool 호출을 처리하려면 이 부분을 수정해야 합니다.
+    tool_output_str = call_responses[0] if call_responses else ""
+
+    logger.info(f"--- [LangGraph] 🛠️ Tool 실행 완료. 결과: {tool_output_str[:300]}... ---")
+
+    # ⭐️ 핵심: messages 리스트에 ToolMessage를 추가하는 대신,
+    # state의 'tool_output' 필드에 직접 결과 문자열을 저장합니다.
+    return {"tool_output": tool_output_str}
 
 
-# 3. 최종 답변 생성 노드
-def generate_final_answer(state):
+# 4). 최종 답변 생성 노드
+async def generate_final_answer(state):
     logger.info("--- [LangGraph] ✍️ Node (generate_final_answer) 실행 ---")
 
+     # ⭐️ 핵심: 더 이상 MessagesPlaceholder를 사용하지 않습니다.
+    # state['tool_output']에 저장된 깨끗한 결과 문자열만 프롬프트에 직접 주입합니다.
+    
+    # 간단한 문자열 기반 프롬프트
+    final_prompt = ChatPromptTemplate.from_template(
+        """
+        당신은 주어진 도구의 결과(Tool Output)를 분석하여, 정해진 규칙에 따라 최종 JSON으로 완벽하게 변환하는 JSON 포맷팅 전문가입니다.
+        당신의 유일한 임무는 JSON을 생성하는 것입니다. **절대로 다른 도구를 호출하지 마세요.**
+        아래에 제공된 "Tool Output" 내용을 바탕으로 JSON을 생성하세요.
+
+        ---
+        ### Tool Output:
+        {tool_output}
+        ---
+
+        ### JSON 생성 규칙:
+        
+        #### 이미지 검색 결과 처리:
+        - `search_ingredient_by_image` 호출 결과는 `cart` 형식 JSON으로 변환
+        - 각 결과는 반드시 `product_name`, `price`, `image_url`, `product_address` 포함
+
+        #### 1. `chatType` 결정:
+        - Tool Output에 'product_name'과 'price'가 포함되어 있으면 `chatType`은 "cart"입니다.
+        - 그 외의 경우(레시피 등) `chatType`은 "chat"입니다.
+
+        #### 2. 최종 JSON 구조 (규칙은 이전과 동일):
+        - `chatType`이 "cart"일 경우: `product_name`, `price`, `image_url`, `product_address` 4개의 키만 정확히 추출하여 `ingredients` 리스트 생성.
+        - `chatType`이 "chat"일 경우: `answer`, `recipes`, `ingredients`, `recipe` 구조에 맞게 생성.
+        """
+    )
+
+
+
     # 'JSON 생성' 역할을 수행하는 체인을 구성합니다.
-    chain = json_generation_prompt | llm
+    chain = final_prompt | llm
 
     # 수정된 프롬프트에 맞춰, 'messages'라는 키로 전체 대화 기록을 전달합니다.
-    final_response = chain.invoke({"messages": state["messages"]})
+    # final_response = await chain.ainvoke({"messages": state["messages"]})
+    final_response_msg = await chain.ainvoke({"tool_output": state["tool_output"]})
+    logger.info(f"--- [LangGraph] ✍️ 최종 응답: {final_response_msg} ---")
     
-    # 최종 AIMessage를 반환합니다.
-    return {"messages": [final_response]}
+    # 기존 메시지 기록에 최종 응답을 추가하여 전체 대화 기록을 업데이트합니다.
+    # ⭐️ 최종 결과 AIMessage를 messages 리스트에 추가하여 전체 대화 기록을 완성합니다.
+    return {"messages": state["messages"] + [final_response_msg]}
 
 
 def should_call_tool(state):
@@ -346,48 +400,48 @@ def should_call_tool(state):
 
 
 # 채팅 히스토리를 LangGraph 메시지 형식으로 변환하는 함수
-def convert_chat_history_to_messages(chat_history: list) -> list:
-    """
-    프론트엔드에서 받은 채팅 히스토리를 LangGraph 메시지 형식으로 변환합니다.
+# def convert_chat_history_to_messages(chat_history: list) -> list:
+#     """
+#     프론트엔드에서 받은 채팅 히스토리를 LangGraph 메시지 형식으로 변환합니다.
     
-    [처리 가능한 형식 1: 텍스트 메시지]
-    [
-        {"role": "user", "content": "라멘 레시피 알려줘"},
-        {"role": "assistant", "content": "요청하신 레시피입니다."},
-        {"role": "user", "content": "볶음밥 레시피 알려줘"},
-        {"role": "assistant", "content": "어떤 볶음밥 레시피를 원하시나요?\n\n1. 김치 볶음밥\n2. 새우 볶음밥\n3. 게살 볶음밥\n4. 파인애플 볶음밥\n\n다른 원하시는 볶음밥 종류가 있으시면 말씀해주세요!"},
-        {"role": "user", "content": "4번"}
-    ]
+#     [처리 가능한 형식 1: 텍스트 메시지]
+#     [
+#         {"role": "user", "content": "라멘 레시피 알려줘"},
+#         {"role": "assistant", "content": "요청하신 레시피입니다."},
+#         {"role": "user", "content": "볶음밥 레시피 알려줘"},
+#         {"role": "assistant", "content": "어떤 볶음밥 레시피를 원하시나요?\n\n1. 김치 볶음밥\n2. 새우 볶음밥\n3. 게살 볶음밥\n4. 파인애플 볶음밥\n\n다른 원하시는 볶음밥 종류가 있으시면 말씀해주세요!"},
+#         {"role": "user", "content": "4번"}
+#     ]
 
-    [처리 가능한 형식 2: 이미지 + 텍스트 멀티모달 메시지]
-    {
-        "role": "user", 
-        "content": [
-            {"type": "text", "text": "이 이미지 분석해서 재료 찾아줘"},
-            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
-        ]
-    }
-    """
-    messages = []
+#     [처리 가능한 형식 2: 이미지 + 텍스트 멀티모달 메시지]
+#     {
+#         "role": "user", 
+#         "content": [
+#             {"type": "text", "text": "이 이미지 분석해서 재료 찾아줘"},
+#             {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
+#         ]
+#     }
+#     """
+#     messages = []
     
-    for msg in chat_history:
-        role = msg.get("role", "").lower()
-        content = msg.get("content", "")
+#     for msg in chat_history:
+#         role = msg.get("role", "").lower()
+#         content = msg.get("content", "")
         
-        if not content:
-            continue
+#         if not content:
+#             continue
             
-        if role == "user":
-            messages.append(HumanMessage(content=content))    # content가 문자열이든 리스트든 HumanMessage가 알아서 처리합니다.
-        elif role == "assistant":
-            messages.append(AIMessage(content=content))   # AI 메시지는 항상 텍스트이므로 그대로 사용합니다.
-        else:
-            # 알 수 없는 role은 user로 처리
-            logger.warning(f"알 수 없는 role '{role}', user로 처리합니다.")
-            messages.append(HumanMessage(content=content))
+#         if role == "user":
+#             messages.append(HumanMessage(content=content))    # content가 문자열이든 리스트든 HumanMessage가 알아서 처리합니다.
+#         elif role == "assistant":
+#             messages.append(AIMessage(content=content))   # AI 메시지는 항상 텍스트이므로 그대로 사용합니다.
+#         else:
+#             # 알 수 없는 role은 user로 처리
+#             logger.warning(f"알 수 없는 role '{role}', user로 처리합니다.")
+#             messages.append(HumanMessage(content=content))
     
-    logger.info(f"채팅 히스토리를 {len(messages)}개의 LangGraph 메시지로 변환했습니다.")
-    return messages
+#     logger.info(f"채팅 히스토리를 {len(messages)}개의 LangGraph 메시지로 변환했습니다.")
+#     return messages
 
 
 # 4. 그래프(Graph) 생성 및 연결
@@ -396,27 +450,31 @@ workflow = StateGraph(AgentState)
 
 # 1️⃣ 노드들을 먼저 그래프에 '등록'합니다.
 workflow.add_node("agent", select_tool)
-workflow.add_node("action", tool_node)
+workflow.add_node("image_injector", inject_image_data) # 💉 새로운 노드 등록
+# workflow.add_node("action", tool_node)
+workflow.add_node("action", custom_tool_node)
 workflow.add_node("formatter", generate_final_answer)
 
 # 2️⃣ 그래프의 시작점을 'agent' 노드로 설정합니다.
 workflow.set_entry_point("agent")
 
 # 3️⃣ '등록된' 노드들 사이의 연결선을 정의하는 조건부 엣지를 추가합니다. 'agent' 노드 다음에 should_continue 함수를 실행하여
-# 'action'으로 갈지, 'END'로 갈지 결정합니다.
+# 'action'으로 갈지, 'END'로 갈지 결정합니다. action으로 가기 전에 image_injector를 거치도록 합니다.
 workflow.add_conditional_edges(
     "agent",
     should_call_tool,
     {
-        "action": "action",
+        "action": "image_injector", # 💉 'action' 대신 'image_injector'로 변경
         END: END,
     },
 )
 
+# 4️⃣ 엣지를 다시 연결합니다.
+workflow.add_edge("image_injector", "action") # 💉 image_injector -> action
 workflow.add_edge("action", "formatter")
 workflow.add_edge("formatter", END)
 
-# 4️⃣ 모든 노드와 연결선이 정의된 후, 그래프를 컴파일합니다.
+# 5️⃣ 그래프를 컴파일합니다.
 app = workflow.compile()
 
 
@@ -424,52 +482,50 @@ app = workflow.compile()
 async def run_agent(input_data: dict):
     """
     사용자 입력을 받아 에이전트를 실행하고 결과를 반환합니다.
-    input_data: 
-        - 단일 메시지: {"message": str, "image_b64": Optional[str]}
-        - 채팅 히스토리: {"chat_history": list} 
+    input_data: {"message": str, "image_b64": Optional[str]}
     """
     logger.info("--- [STEP 0] Agent Start ---")
     
     try:
-        # 입력 데이터 처리: 채팅 히스토리 또는 단일 메시지
-        if "chat_history" in input_data:
-            # 채팅 히스토리 처리 (기존 로직 유지, 단, 히스토리 내 이미지 포맷은 위 convert 함수 참고)
-            chat_history = input_data["chat_history"]
-            logger.info(f"--- [STEP 1a] 채팅 히스토리 처리: {len(chat_history)}개 메시지 ---")
-            messages = convert_chat_history_to_messages(chat_history)
+        # 단일 메시지 처리 (기존 방식)
+        user_message = input_data.get("message", "")
+        image_bytes = input_data.get("image")
+        # image_content_type = input_data.get("image_content_type", "image/jpeg")
+        logger.info(f"--- [STEP 1b] 단일 메시지 처리: {user_message} ---")
+
+        inputs = {} # inputs 딕셔너리를 먼저 초기화
+        
+        if image_bytes:
+            import base64
+            image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+            # logger.info(f"--- image_b64: {image_b64} ---")
+            logger.info("--- [STEP 1c] 이미지 데이터가 포함되었습니다. ---")
+
+
+            # ⭐️⭐️⭐️ [모든 문제의 원흉을 해결하는 코드] ⭐️⭐️⭐️
+            # 사용자가 텍스트 없이 이미지만 보냈을 경우(user_message가 None이거나 비어있을 때),
+            # 대화의 문맥을 만들어주기 위한 기본 메시지를 설정합니다.
+            if not user_message:
+                user_message = "이 이미지에 있는 상품 정보를 찾아줘."
+                logger.info(f"--- [STEP 1d] 텍스트가 없어 기본 메시지 설정: '{user_message}' ---")
             
-            # 최신 사용자 메시지가 있는지 확인
-            if not messages or not isinstance(messages[-1], HumanMessage):
-                logger.warning("채팅 히스토리의 마지막 메시지가 사용자 메시지가 아닙니다.")
-                # 빈 사용자 메시지 추가
-                messages.append(HumanMessage(content=""))
+            # 💡 [수정] HumanMessage의 content를 복잡한 리스트가 아닌 단순 문자열로 만듭니다.
+            # 도구 선택 프롬프트가 인식할 수 있도록 이미지 첨부 사실을 텍스트에 명시적으로 추가합니다.
+            full_message = f"{user_message} [사용자가 이미지를 첨부했습니다]"
+            messages = [HumanMessage(content=full_message)]
+            inputs = {"messages": messages, "image_b64": image_b64} # 실제 데이터는 state에 저장하여 LangGraph로 전달합니다.
+
         else:
-            # 단일 메시지 처리 (기존 방식)
-            user_message = input_data.get("message", "")
-            image_b64 = input_data.get("image_b64")
-            logger.info(f"--- [STEP 1b] 단일 메시지 처리: {user_message} ---")
-            
-            if image_b64:
-                logger.info("--- [STEP 1c] 이미지 데이터가 포함되었습니다. ---")
-                # 이미지가 있는 경우, 텍스트와 이미지를 함께 포함하는 content 리스트 생성
-                content = [
-                    {"type": "text", "text": user_message},
-                    {
-                        "type": "image_url",
-                        "image_url": f"data:image/jpeg;base64,{image_b64}"
-                    }
-                ]
-                messages = [HumanMessage(content=content)]
-            else:
-                # 텍스트만 있는 경우
-                messages = [HumanMessage(content=user_message)]
-          
+            # 이미지가 없거나 텍스트만 있는 경우
+            messages = [HumanMessage(content=user_message or "")] # user_message가 None일 경우 빈 문자열로 처리
+            inputs = {"messages": messages, "image_b64": None} # image_b64는 None으로 전달
+        
         if not messages:
              raise ValueError("처리할 메시지가 없습니다.")
         
         # LangGraph 실행
         logger.info("--- [STEP 2] app.ainvoke 호출 중... ---")
-        inputs = {"messages": messages}
+        logger.info(f"====== inputs 확인 : {inputs} ======")
         result_state = await app.ainvoke(inputs)
         logger.info("--- [STEP 3] app.ainvoke가 정상적으로 완료되었습니다. ---")
 
@@ -477,9 +533,6 @@ async def run_agent(input_data: dict):
         # output_string = result.get("output", "")
         final_message = result_state["messages"][-1]
         output_string = final_message.content if isinstance(final_message, AIMessage) else ""
-        
-        # logger.info(f"--- [STEP 4] 출력 문자열 추출 완료. 길이: {len(output_string)}자 ---")
-        # logger.debug(f"--- 출력 미리보기: {output_string[:200]}...")  # 앞 200자만 로그에 출력
 
         # if not output_string or not output_string.strip().startswith(('{', '[')):
         #      logger.error(f"--- [ERROR] 최종 결과가 JSON이 아닙니다: {output_string}")

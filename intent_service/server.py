@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks 
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Form, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import logging
@@ -7,6 +7,7 @@ from planning_agent import run_agent
 import uuid
 import time
 import re
+from typing import Optional
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -192,7 +193,6 @@ jobs = {}
 async def run_agent_and_store_result(job_id: str, input_data: dict):
     """
     백그라운드에서 에이전트를 실행하고 결과를 jobs 딕셔너리에 저장하는 함수
-    input_data: {"message": str} 또는 {"chat_history": list} 형태
     """
     logger.info(f"=== 🤍Background-Task-{job_id}: 작업 시작. ===")
     jobs[job_id] = {"status": "processing", "start_time": time.time()}
@@ -209,61 +209,50 @@ async def run_agent_and_store_result(job_id: str, input_data: dict):
 
 # 즉시 job_id를 반환.
 @app.post("/chat")
-async def chat_with_agent(request: Request, background_tasks: BackgroundTasks):
+async def chat_with_agent(
+    background_tasks: BackgroundTasks,
+    message: Optional[str] = Form(None),
+    image: Optional[UploadFile] = File(None),
+):
     """
-    사용자 요청을 받아 작업을 백그라운드에 등록하고 즉시 작업 ID를 반환합니다.
+    사용자 요청(텍스트 및/또는 이미지)을 받아 작업을 백그라운드에 등록하고 즉시 작업 ID를 반환합니다.
     """
     try:
-        print(request)
-        
-        # 1. 요청 바디 파싱 - 단일 메시지 또는 채팅 히스토리 지원
-        body = await request.json()
         logger.info(f"=== 🤍intent_service에서 /chat 엔드포인트 호출됨🤍 ===")
-        
-        # 채팅 히스토리 또는 단일 메시지 처리
-        user_message = body.get("message")
-        chat_history = body.get("chat_history", [])
-        
-        # 채팅 히스토리가 있으면 우선 사용, 없으면 단일 메시지 사용
-        if chat_history:
-            logger.info(f"=== 🤍채팅 히스토리 수신: {len(chat_history)}개 메시지")
-            # 최신 메시지 추출 (유튜브 링크 검증용)
-            latest_message = chat_history[-1].get("content", "") if chat_history else ""
-            input_data = {"chat_history": chat_history}
-        else:
-            logger.info(f"=== 🤍단일 사용자 메시지: {user_message}")
-            if not user_message:
-                raise HTTPException(status_code=400, detail="message 또는 chat_history가 필요합니다.")
-            latest_message = user_message
-            input_data = {"message": user_message}
+        logger.info(f"=== 🤍수신 메시지: {message}")
+        if image:
+            logger.info(f"=== 🤍수신 이미지: {image.filename}, {image.content_type}")
+        if not message and not image:
+            raise HTTPException(status_code=400, detail="message 또는 image가 필요합니다.")
 
+        # 유튜브 URL 검사를 위해 메시지가 있으면 사용
+        latest_message = message or ""
 
-        # --- 👇 여기가 바로 추가된 유튜브 링크 개수 검사 로직 👇 ---
+        # 유튜브 링크 개수 검사 로직
         if count_youtube_urls(latest_message) > 1:
             logger.warning(f"요청 거부: 메시지에 유튜브 링크가 2개 이상 포함됨 - {latest_message}")
-            # 400 Bad Request 에러를 발생시켜 사용자에게 알립니다.
             raise HTTPException(
                 status_code=400,
                 detail="죄송합니다, 한 번에 하나의 유튜브 링크만 분석할 수 있습니다."
             )
-        # --- 👆 여기까지가 추가된 부분 👆 ---
 
+        # 에이전트에 전달할 입력 데이터 구성
+        input_data = {}
+        if message:
+            input_data["message"] = message
+        if image:
+            input_data["image"] = await image.read()
+            input_data["image_filename"] = image.filename
+            input_data["image_content_type"] = image.content_type
 
         job_id = str(uuid.uuid4()) # 고유한 작업 ID 생성
-        
-        # 백그라운드에서 run_agent_and_store_result 함수를 실행하도록 등록
         background_tasks.add_task(run_agent_and_store_result, job_id, input_data)
-        
-        # 클라이언트에게는 작업 ID를 즉시 반환
         return JSONResponse(status_code=202, content={"job_id": job_id})
         
     except HTTPException as http_exc:
-        # 1. 우리가 직접 발생시킨 HTTPException은 그대로 클라이언트에 전달합니다.
-        # 이렇게 하면 400번 에러가 500번으로 재포장되지 않습니다.
         logger.error(f"HTTP 예외 발생 (클라이언트로 전달됨): {http_exc.status_code} - {http_exc.detail}")
         raise http_exc
     except Exception as e:
-        # 2. 예상치 못한 다른 모든 종류의 에러는 500번 내부 서버 오류로 처리합니다.
         logger.error(f"예상치 못한 서버 오류 발생: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"서버 내부에서 예상치 못한 오류가 발생했습니다: {e}")
 

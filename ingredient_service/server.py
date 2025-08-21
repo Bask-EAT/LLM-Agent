@@ -1,10 +1,11 @@
 import uvicorn
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, APIRouter, BackgroundTasks, Body
 from typing import List, Union, Literal
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import httpx
 import os
+import base64
 
 # --- 설정 (파일 상단에 위치) ---
 # 실제 벡터 DB API의 주소를 환경 변수에서 가져옵니다.
@@ -61,7 +62,7 @@ async def search_by_text(request: Request):
 
         # 3. httpx를 사용해 실제 벡터 DB API를 비동기적으로 호출합니다.
         async with httpx.AsyncClient() as client:
-            response = await client.post(target_url, json=vector_db_payload, timeout=30.0)
+            response = await client.post(target_url, json=vector_db_payload, timeout=60.0)
             
             logger.info(f"=== 💚 [8004 서버] 실제 벡터 DB로부터 응답 받음. Status: {response.status_code}")
             
@@ -113,7 +114,12 @@ async def search_by_text(request: Request):
 
 
 @app.post("/search/image")
-async def search_by_image(request: Request):
+async def search_by_image(
+     # ⭐️ body에서 image_b64 문자열을 직접 받도록 수정
+    image_b64: str = Body(..., embed=True),
+    top_k: int = 10,
+    history: str = "latest"
+):
     """
     이미지로 유사한 재료 상품을 검색합니다.
     이 엔드포인트는 planning-agent로부터 요청을 받아,
@@ -123,65 +129,64 @@ async def search_by_image(request: Request):
 
     try:
             # 1. planning-agent로부터 받은 요청 본문(body)을 파싱합니다.
-            incoming_body = await request.json()
-            image_data = incoming_body.get("image_data") # Base64 인코딩된 이미지 데이터
+            image_bytes = base64.b64decode(image_b64)
+            # image_data = incoming_body.get("image_data") # Base64 인코딩된 이미지 데이터
             
-            if not image_data:
-                logger.error("=== 💚 [8004 서버] 오류: 요청 본문에 'image_data' 필드가 없습니다.")
-                raise HTTPException(status_code=400, detail="'image_data' 필드가 필요합니다.")
+            if not image_bytes:
+                logger.error("=== 💚 [8004 서버] 오류: 요청 본문에 'image_bytes' 필드가 없습니다.")
+                raise HTTPException(status_code=400, detail="'image_bytes' 필드가 필요합니다.")
                 
-            logger.info("=== 💚 [8004 서버] Base64 이미지 데이터 수신 완료 (길이: {}) 💚 ===".format(len(image_data)))
+            logger.info(f"=== 💚 [8004 서버] Base64 이미지 데이터 디코딩 완료 (길이: {len(image_bytes)}) 💚 ===")
 
-            # 2. 실제 벡터 DB API로 보낼 새로운 요청 본문(payload)을 구성합니다.
-            # 벡터 DB가 받을 스키마에 맞춰야 합니다. 여기서는 'image_data'와 'top_k'를 보낸다고 가정합니다.
-            vector_db_payload = {
-                "image_data": image_data,
-                "top_k": incoming_body.get("top_k", DEFAULT_TOP_K)
-            }
-            # 실제 벡터 DB의 이미지 검색 URL을 지정합니다. (예시: /search/image)
+            # 2. ⭐️ 8000 서버로 전달할 form-data 생성
+            files = {'file': ('image.jpeg', image_bytes, 'image/jpeg')}
+            params = {'top_k': top_k, 'history': history}
+                # 실제 벡터 DB의 이미지 검색 URL을 지정합니다. (예시: /search/image)
             target_url = f"{VECTOR_DB_API_URL}/search/image"
             
             logger.info(f"=== 💚 [8004 서버] 실제 벡터 DB로 요청 전송 시작. URL: {target_url}")
 
             # 3. httpx를 사용해 실제 벡터 DB API를 비동기적으로 호출합니다.
             async with httpx.AsyncClient() as client:
-                response = await client.post(target_url, json=vector_db_payload, timeout=60.0) # 이미지 처리를 위해 타임아웃을 넉넉하게 설정
+                response = await client.post(target_url, files=files, params=params, timeout=30.0)
                 
                 logger.info(f"=== 💚 [8004 서버] 실제 벡터 DB로부터 응답 받음. Status: {response.status_code}")
                 
-                response.raise_for_status() 
+                response.raise_for_status()     # HTTP 오류 발생 시 예외 발생
                 
                 search_result = response.json()
+                logger.info(f"=== 💚 [8004 서버] 최종 검색 결과: {search_result}")
                 logger.info("=== 💚 [8004 서버] 최종 검색 결과를 planning-agent로 반환합니다.")
+                return response.json()
 
                 # 4. planning-agent가 이해할 수 있는 표준 스키마로 정규화합니다.
                 # 텍스트 검색과 동일한 'cart' 포맷을 사용합니다.
-                items = search_result.get("results", []) if isinstance(search_result, dict) else []
-                products: List[dict] = []
-                for it in items:
-                    if not isinstance(it, dict):
-                        continue
-                    p = {
-                        "product_name": str(it.get("product_name", it.get("name", ""))),
-                        "price": it.get("price", 0),
-                        "image_url": str(it.get("image_url", "")),
-                        "product_address": str(it.get("product_address", "")),
-                    }
-                    products.append(p)
+                # items = search_result.get("results", []) if isinstance(search_result, dict) else []
+                # products: List[dict] = []
+                # for it in items:
+                #     if not isinstance(it, dict):
+                #         continue
+                #     p = {
+                #         "product_name": str(it.get("product_name", it.get("name", ""))),
+                #         "price": it.get("price", 0),
+                #         "image_url": str(it.get("image_url", "")),
+                #         "product_address": str(it.get("product_address", "")),
+                #     }
+                #     products.append(p)
 
-                payload = {
-                    "chatType": "cart",
-                    "content": "이미지와 관련된 상품을 찾았습니다.",
-                    "recipes": [
-                        {
-                            "source": "ingredient_search",
-                            "food_name": "이미지 기반 검색", # 이미지 검색이므로 특정 음식 이름 대신 일반적인 텍스트 사용
-                            "ingredients": products,
-                            "recipe": [],
-                        }
-                    ],
-                }
-                return payload
+                # payload = {
+                #     "chatType": "cart",
+                #     "content": "이미지와 관련된 상품을 찾았습니다.",
+                #     "recipes": [
+                #         {
+                #             "source": "ingredient_search",
+                #             "food_name": "이미지 기반 검색", # 이미지 검색이므로 특정 음식 이름 대신 일반적인 텍스트 사용
+                #             "ingredients": products,
+                #             "recipe": [],
+                #         }
+                #     ],
+                # }
+                # return payload
                 
     except httpx.HTTPStatusError as e:
             error_message = f"벡터 DB API 호출 중 HTTP 오류 발생: {e.response.status_code} - {e.response.text}"
