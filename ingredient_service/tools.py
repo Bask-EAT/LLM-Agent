@@ -90,7 +90,44 @@ async def search_ingredient_by_image(image_b64: str) -> str:
 @tool
 async def search_ingredient_multimodal(query: str, image_b64: str) -> str:
     """사용자가 '텍스트와 이미지'를 모두 사용해 재료나 상품 구매 정보를 물어볼 때 사용합니다. 예를 들어 '이 사진 속 파스타면에 어울리는 소스 추천해줘' 같은 질문에 사용합니다."""
-    async with httpx.AsyncClient() as client:
-        response = await client.post(f"{INGREDIENT_SERVICE_URL}/search/multimodal", params={"query": query, "image_b64": image_b64})
-        response.raise_for_status()
-        return json.dumps(response.json(), ensure_ascii=False)
+    
+    try:
+        # 텍스트나 이미지가 없는 경우를 방지하는 가드(Guard) 코드
+        if not query or not image_b64:
+            return json.dumps({"error": "💢 호출 오류: 텍스트(query)와 이미지(image_b64) 데이터가 모두 필요합니다. 💢"})
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Base64 데이터 앞부분의 메타 정보 제거
+            if ',' in image_b64:
+                image_b64 = image_b64.split(',')[1]
+            
+            # URL 파라미터 대신 JSON 페이로드로 데이터를 전송
+            payload = {
+                "query": query,
+                "image_b64": image_b64
+            }
+            
+            logger.info(f"=== 💨 [Agent Tool] search_ingredient_multimodal 호출. Payload: {payload}")
+            response = await client.post(f"{INGREDIENT_SERVICE_URL}/search/multimodal", json=payload)
+            logger.info(f"=== 💨💨 [Agent Tool] Tool 에서 /search/multimodal 응답 받음 {response}")
+            
+            # 4xx, 5xx 에러 발생 시 예외를 발생시킴
+            response.raise_for_status()
+
+            result_data = response.json()
+            
+            # 결과를 JSON 문자열로 변환하여 반환
+            return json.dumps(result_data, ensure_ascii=False)
+
+    # HTTP 상태 코드 에러 처리
+    except httpx.HTTPStatusError as e:
+        error_content = e.response.json() if "application/json" in e.response.headers.get("content-type", "") else e.response.text
+        logger.error(f"--- [Agent Tool] API 호출 실패 (HTTP {e.response.status_code}): {error_content}")
+        return json.dumps({
+            "error": f"멀티모달 검색 서비스에서 오류가 발생했습니다 (코드: {e.response.status_code}).",
+            "detail": error_content
+        })
+    # 그 외 모든 예외 처리
+    except Exception as e:
+        logger.error(f"--- [Agent Tool] 예상치 못한 오류 발생: {e}", exc_info=True)
+        return json.dumps({"error": f"멀티모달 검색 중 알 수 없는 오류가 발생했습니다: {str(e)}"})
