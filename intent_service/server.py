@@ -198,9 +198,9 @@ async def run_agent_and_store_result(job_id: str, input_data: dict):
     jobs[job_id] = {"status": "processing", "start_time": time.time()}
     try:
         result = await run_agent(input_data)
-        logger.info(f"=== 🤍 Agent 최종 응답: {result} 🤍 ===")
-        jobs[job_id] = {"status": "completed", "result": result}
-        logger.info(f"=== 🤍Background-Task-{job_id}: 작업 완료. ===")
+        logger.info(f"=== 🤍❤ Agent 최종 응답: {result} ❤🤍 ===")      # ★★ 최종적으로 클라이언트에게 반환되는 것(dict형태) ★★
+        jobs[job_id] = {"status": "completed", "result": result}      
+        logger.info(f"=== 🤍❤ Background-Task-{job_id}: 작업 완료. ❤🤍 ===")
     except Exception as e:
         logger.error(f"=== 🤍Background-Task-{job_id}: 작업 중 에러 발생: {e}", exc_info=True)
         jobs[job_id] = {"status": "failed", "error": str(e)}
@@ -247,7 +247,7 @@ async def chat_with_agent(
 
         job_id = str(uuid.uuid4()) # 고유한 작업 ID 생성
         background_tasks.add_task(run_agent_and_store_result, job_id, input_data)
-        return JSONResponse(status_code=202, content={"job_id": job_id})
+        return JSONResponse(status_code=202, content={"job_id": job_id})    # ★★ 최종 결과(dict)를 JSON으로 바꿔서 클라이언트로 전송
         
     except HTTPException as http_exc:
         logger.error(f"HTTP 예외 발생 (클라이언트로 전달됨): {http_exc.status_code} - {http_exc.detail}")

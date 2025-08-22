@@ -54,7 +54,7 @@ tools = [
 
 # 2. LLM 모델 설정
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-pro", 
+    model="gemini-2.5-flash", 
     temperature=0, 
     google_api_key=GEMINI_API_KEY,
     timeout=60,  # <-- ⭐️ 이 부분을 추가해 주세요! (단위: 초)
@@ -107,14 +107,14 @@ json_generation_prompt = ChatPromptTemplate.from_messages([
 
     #### **2. 최종 JSON 구조:**
 
-    - **`chatType`이 "chat"일 경우:**
+    - **`chatType`이 "recipe"일 경우:**
       - `tool_output`의 `answer`를 참고하여 친절한 답변을 생성하세요.
       - `ingredients`는 반드시 **item, amount, unit**을 키로 가지는 객체의 리스트여야 합니다. amount나 unit이 없는 경우(예: '얼음 약간')에는 빈 문자열("")을 값으로 채워주세요.
       - `recipes` 리스트를 `tool_output`의 내용으로 채우세요.
       - 최종 구조는 반드시 아래와 같아야 합니다.
       ```json
       {{
-        "chatType": "chat",
+        "chatType": "recipe",
         "answer": "요청하신 레시피입니다.",
         "recipes": [
           {{
@@ -150,7 +150,7 @@ json_generation_prompt = ChatPromptTemplate.from_messages([
           {{
             "source": "ingredient_search",
             "food_name": "사용자가 검색한 상품명",
-            "ingredients": [
+            "product": [
                 {{
                   "product_name": "상품 이름",
                   "price": 1234,
@@ -163,6 +163,14 @@ json_generation_prompt = ChatPromptTemplate.from_messages([
         ]
       }}
       ```
+     
+    - **`chatType`이 "chat"일 경우:**
+    ```json
+      {{
+        "chatType": "chat",
+        "answer": "어떤 볶음밥 종류가 있으시나요?",
+        "recipes": [],
+      }}
     """),
     MessagesPlaceholder(variable_name="messages"), 
 ])
@@ -226,7 +234,7 @@ def inject_image_data(state: AgentState) -> dict:
     logger.info("--- [LangGraph] 💉 Node (inject_image_data) 실행 ---")
 
     image_to_inject = state.get("image_b64")
-    logger.info(f"--- [LangGraph] 💉 주입할 이미지 데이터: {image_to_inject} ---")
+    # logger.info(f"--- [LangGraph] 💉 주입할 이미지 데이터: {image_to_inject} ---")
 
     if not image_to_inject:
         logger.warning("--- [LangGraph] 💉 주입할 이미지 데이터가 없습니다 ---")
@@ -237,26 +245,6 @@ def inject_image_data(state: AgentState) -> dict:
         return {} # 변경 사항 없음을 명시적으로 알림
     last_message = state["messages"][-1]
     # logger.info(f"--- [LangGraph] 💉 마지막 메시지: {last_message} ---")
-    
-    # # state에 이미지 데이터가 있고, 마지막 메시지에 tool_calls가 있을 때만 작동
-    # if image_to_inject and last_message.tool_calls:
-    #     # 새로운 tool_calls 리스트를 만듭니다.
-    #     new_tool_calls = []
-    #     for tool_call in last_message.tool_calls:
-    #         # 이미지 검색 도구일 경우
-    #         if tool_call["name"] == "search_ingredient_by_image":
-    #             logger.info(f"--- [LangGraph] 👉 search_ingredient_by_image 호출에 이미지 데이터 주입 ---")
-    #             # 기존 args를 복사하고 image_b64 값을 덮어씁니다.
-    #             new_args = tool_call["args"].copy()
-    #             new_args["image_b64"] = image_to_inject
-
-    #             # 💡 [수정] 일반 딕셔너리 대신 LangChain의 공식 ToolCall 객체를 생성하여 안정성을 높입니다.
-    #             new_tool_calls.append(
-    #                 ToolCall(name=tool_call["name"], args=new_args, id=tool_call["id"])
-    #             )
-    #         else:
-    #             # 다른 도구는 그대로 추가
-    #             new_tool_calls.append(tool_call)
         
     #     # 1. 기존 메시지 리스트에서 마지막 AI Message를 제거합니다.
     #     messages_without_last = state["messages"][:-1]
@@ -335,12 +323,76 @@ async def custom_tool_node(state: AgentState, config: RunnableConfig):
     # 여러 Tool 호출을 처리하려면 이 부분을 수정해야 합니다.
     tool_output_str = call_responses[0] if call_responses else ""
 
-    logger.info(f"--- [LangGraph] 🛠️ Tool 실행 완료. 결과: {tool_output_str[:300]}... ---")
+    logger.info(f"--- [LangGraph] 🛠️ Tool 실행 완료. ---")
+    # logger.info(f"--- [LangGraph] 🛠️ Tool 실행 완료. 결과: {tool_output_str[:300]}... ---")
+    logger.info(f"--- [LangGraph] 🛠️ Tool 실행 완료. 결과: {tool_output_str}")      # ★★★ 벡터DB에서 가져온 최종 검색 결과임 ★★★
 
     # ⭐️ 핵심: messages 리스트에 ToolMessage를 추가하는 대신,
     # state의 'tool_output' 필드에 직접 결과 문자열을 저장합니다.
     return {"tool_output": tool_output_str}
 
+
+# 'JSON 생성' 역할을 수행하는 체인을 미리 구성합니다.
+# 이렇게 하면 generate_final_answer 함수가 호출될 때마다 체인을 새로 만들 필요가 없어 효율적입니다.
+final_prompt_for_formatter = ChatPromptTemplate.from_template(
+    """
+    당신은 주어진 도구의 결과(Tool Output)를 분석하여, 정해진 API 규격에 따라 최종 JSON으로 완벽하게 변환하는 JSON 포맷팅 전문가입니다.
+    당신의 유일한 임무는 JSON을 생성하는 것입니다. **절대로 다른 도구를 호출하거나 불필요한 설명을 추가하지 마세요.**
+    오직 JSON 객체만 생성해야 합니다.
+
+    ---
+    ### Tool Output (벡터 DB에서 온 원본 데이터):
+    {tool_output}
+    ---
+
+    ### JSON 생성 규칙:
+
+    #### 1. `chatType` 결정:
+    - Tool Output에 레시피 정보(예: 'recipe', 'ingredients' 키)가 있다면 'recipe'로 설정하세요.
+    - Tool Output에 `results`라는 키가 있고, 그 안의 객체들에 `product_name`과 `price`가 포함되어 있으면, `chatType`은 반드시 **"cart"** 여야 합니다.
+    - 그 외의 경우 `chatType`은 "chat"입니다.
+
+    #### 2. 최종 JSON 구조 (규칙은 이전과 동일):
+    - `chatType`이 **"cart"**일 경우, 아래 규칙을 철저히 따르세요.
+
+    - **[핵심 추출 규칙]**: Tool Output의 `results` 리스트에 있는 각 상품 객체에서 **`product_name`, `price`, `image_url`, `product_address`** 4개의 키와 값만 정확히 추출하세요. 다른 모든 필드(id, category, quantity, similarity_score 등)는 **반드시 제외**해야 합니다.
+    - 추출한 4개의 키로 구성된 객체들의 리스트를 만드세요.
+    - 이 리스트를 최종 JSON의 `recipes[0].product` 키의 값으로 사용하세요.
+    - `answer` 필드에는 "요청하신 상품을 찾았습니다."와 같은 간단한 안내 문구를 넣으세요.
+    - `food_name` 필드에는 "이미지 검색 결과"라고 입력하세요.
+
+    - 최종 결과는 반드시 아래의 JSON 구조와 일치해야 합니다.
+
+    ```json
+    {{
+      "chatType": "cart",
+      "answer": "요청하신 상품을 찾았습니다.",
+      "recipes": [
+        {{
+          "source": "ingredient_search",
+          "food_name": "이미지 검색 결과",
+          "product": [
+            {{
+              "product_name": "상품 이름 1",
+              "price": 1234,
+              "image_url": "https://...",
+              "product_address": "https://..."
+            }},
+            {{
+              "product_name": "상품 이름 2",
+              "price": 5678,
+              "image_url": "https://...",
+              "product_address": "https://..."
+            }}
+          ],
+          "recipe": []
+        }}
+      ]
+    }}
+    ```
+    """
+)
+formatter_chain = final_prompt_for_formatter | llm
 
 # 4). 최종 답변 생성 노드
 async def generate_final_answer(state):
@@ -348,44 +400,11 @@ async def generate_final_answer(state):
 
      # ⭐️ 핵심: 더 이상 MessagesPlaceholder를 사용하지 않습니다.
     # state['tool_output']에 저장된 깨끗한 결과 문자열만 프롬프트에 직접 주입합니다.
-    
-    # 간단한 문자열 기반 프롬프트
-    final_prompt = ChatPromptTemplate.from_template(
-        """
-        당신은 주어진 도구의 결과(Tool Output)를 분석하여, 정해진 규칙에 따라 최종 JSON으로 완벽하게 변환하는 JSON 포맷팅 전문가입니다.
-        당신의 유일한 임무는 JSON을 생성하는 것입니다. **절대로 다른 도구를 호출하지 마세요.**
-        아래에 제공된 "Tool Output" 내용을 바탕으로 JSON을 생성하세요.
-
-        ---
-        ### Tool Output:
-        {tool_output}
-        ---
-
-        ### JSON 생성 규칙:
-        
-        #### 이미지 검색 결과 처리:
-        - `search_ingredient_by_image` 호출 결과는 `cart` 형식 JSON으로 변환
-        - 각 결과는 반드시 `product_name`, `price`, `image_url`, `product_address` 포함
-
-        #### 1. `chatType` 결정:
-        - Tool Output에 'product_name'과 'price'가 포함되어 있으면 `chatType`은 "cart"입니다.
-        - 그 외의 경우(레시피 등) `chatType`은 "chat"입니다.
-
-        #### 2. 최종 JSON 구조 (규칙은 이전과 동일):
-        - `chatType`이 "cart"일 경우: `product_name`, `price`, `image_url`, `product_address` 4개의 키만 정확히 추출하여 `ingredients` 리스트 생성.
-        - `chatType`이 "chat"일 경우: `answer`, `recipes`, `ingredients`, `recipe` 구조에 맞게 생성.
-        """
-    )
-
-
-
-    # 'JSON 생성' 역할을 수행하는 체인을 구성합니다.
-    chain = final_prompt | llm
 
     # 수정된 프롬프트에 맞춰, 'messages'라는 키로 전체 대화 기록을 전달합니다.
     # final_response = await chain.ainvoke({"messages": state["messages"]})
-    final_response_msg = await chain.ainvoke({"tool_output": state["tool_output"]})
-    logger.info(f"--- [LangGraph] ✍️ 최종 응답: {final_response_msg} ---")
+    final_response_msg = await formatter_chain.ainvoke({"tool_output": state["tool_output"]})
+    logger.info(f"--- [LangGraph] ✍️ 최종 응답: {final_response_msg} ---")      # ★★★ formatter_chain에서 tool_output(원본 데이터)를 가공한 최종 응답
     
     # 기존 메시지 기록에 최종 응답을 추가하여 전체 대화 기록을 업데이트합니다.
     # ⭐️ 최종 결과 AIMessage를 messages 리스트에 추가하여 전체 대화 기록을 완성합니다.
@@ -398,50 +417,6 @@ def should_call_tool(state):
         return "action"
     return END
 
-
-# 채팅 히스토리를 LangGraph 메시지 형식으로 변환하는 함수
-# def convert_chat_history_to_messages(chat_history: list) -> list:
-#     """
-#     프론트엔드에서 받은 채팅 히스토리를 LangGraph 메시지 형식으로 변환합니다.
-    
-#     [처리 가능한 형식 1: 텍스트 메시지]
-#     [
-#         {"role": "user", "content": "라멘 레시피 알려줘"},
-#         {"role": "assistant", "content": "요청하신 레시피입니다."},
-#         {"role": "user", "content": "볶음밥 레시피 알려줘"},
-#         {"role": "assistant", "content": "어떤 볶음밥 레시피를 원하시나요?\n\n1. 김치 볶음밥\n2. 새우 볶음밥\n3. 게살 볶음밥\n4. 파인애플 볶음밥\n\n다른 원하시는 볶음밥 종류가 있으시면 말씀해주세요!"},
-#         {"role": "user", "content": "4번"}
-#     ]
-
-#     [처리 가능한 형식 2: 이미지 + 텍스트 멀티모달 메시지]
-#     {
-#         "role": "user", 
-#         "content": [
-#             {"type": "text", "text": "이 이미지 분석해서 재료 찾아줘"},
-#             {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
-#         ]
-#     }
-#     """
-#     messages = []
-    
-#     for msg in chat_history:
-#         role = msg.get("role", "").lower()
-#         content = msg.get("content", "")
-        
-#         if not content:
-#             continue
-            
-#         if role == "user":
-#             messages.append(HumanMessage(content=content))    # content가 문자열이든 리스트든 HumanMessage가 알아서 처리합니다.
-#         elif role == "assistant":
-#             messages.append(AIMessage(content=content))   # AI 메시지는 항상 텍스트이므로 그대로 사용합니다.
-#         else:
-#             # 알 수 없는 role은 user로 처리
-#             logger.warning(f"알 수 없는 role '{role}', user로 처리합니다.")
-#             messages.append(HumanMessage(content=content))
-    
-#     logger.info(f"채팅 히스토리를 {len(messages)}개의 LangGraph 메시지로 변환했습니다.")
-#     return messages
 
 
 # 4. 그래프(Graph) 생성 및 연결
@@ -540,7 +515,12 @@ async def run_agent(input_data: dict):
 
          # --- 디버깅 코드 추가 ---
         logger.info("--- [STEP 4] LLM의 원본 응답(Raw Output)을 추출했습니다. ---")
-        logger.info(f"\n<<<<<<<<<< RAW OUTPUT START >>>>>>>>>>\n{output_string}\n<<<<<<<<<<< RAW OUTPUT END >>>>>>>>>>>")
+        # logger.info(f"\n<<<<<<<<<< RAW OUTPUT START >>>>>>>>>>\n{output_string}\n<<<<<<<<<<< RAW OUTPUT END >>>>>>>>>>>")
+        # 최종 답변 생성 노드에서 완성된 final_response_msg이 LLM의 원본 응답에 들어가게됨. 
+        # ```json {"chatType": "cart",
+        #          "answer": "요청하신 상품을 찾았습니다.",
+        #          "recipes": [{}...}] 
+        #         } ```
         
         if not output_string:
             logger.error("--- [ERROR] LLM의 최종 응답이 비어있습니다.")
@@ -573,11 +553,11 @@ async def run_agent(input_data: dict):
         logger.info(f"--- [STEP 8] json.loads()로 문자열을 파싱 시도 중... ---")
         parsed_data = json.loads(clean_json_string)
         
-        logger.info(f"--- [STEP 9] json.loads()가 정상적으로 완료되었습니다. 데이터 타입: {type(parsed_data)} ---")
+        logger.info(f"--- [STEP 9] json.loads()가 정상적으로 완료되었습니다. 데이터 타입: {type(parsed_data)} ---")     # 데이터 타입: <class 'dict'> ---
         
         # 마지막 단계: 이 로그가 찍히면, 함수 자체는 성공적으로 끝난 것입니다.
         logger.info("--- ✅ [마지막 단계] 모든 처리가 완료되었습니다. 이제 파싱된 딕셔너리를 반환합니다. ---")
-        return parsed_data
+        return parsed_data      # ---→ 🤍❤ Agent 최종 응답 로그 부분
     
     
 
