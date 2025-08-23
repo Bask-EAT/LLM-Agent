@@ -258,16 +258,16 @@ async def chat_with_agent(
 
 
 # 작업 상태를 알려줌.
-@app.get("/status/{job_id}")
-async def get_status(job_id: str):
-    """
-    주어진 작업 ID의 상태와 결과를 반환합니다.
-    """
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+# @app.get("/status/{job_id}")
+# async def get_status(job_id: str):
+#     """
+#     주어진 작업 ID의 상태와 결과를 반환합니다.
+#     """
+#     job = jobs.get(job_id)
+#     if not job:
+#         raise HTTPException(status_code=404, detail="Job not found")
     
-    return JSONResponse(content=job)
+#     return JSONResponse(content=job)
 
 
 @app.get("/health")
