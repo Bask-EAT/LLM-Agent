@@ -4,6 +4,8 @@ import httpx
 import logging
 import os
 from dotenv import load_dotenv
+import json
+
 
 # .env 파일의 환경 변수를 로드
 load_dotenv()
@@ -68,12 +70,42 @@ async def search_ingredient_by_text(query: str) -> dict:
 @tool
 async def search_ingredient_by_image(image_b64: str) -> dict:
     """사용자가 '이미지'만으로 재료나 상품 구매 정보를 물어볼 때 사용합니다. 이미지 자체에 대한 질문일 때 사용하세요."""
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{API_BASE_URL}/search/image", params={"image_b64": image_b64}
-        )
-        response.raise_for_status()
-        return response.json()
+
+    try:
+        if not image_b64:
+            # 이 경우는 에이전트가 잘못 호출한 경우이므로, 에러를 명확히 반환합니다.
+            return json.dumps({"error": "💢 호출 오류: 이미지 데이터가 비어있습니다. 💢"})
+        
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # 모델이 base64 문자열 앞의 'data:image/jpeg;base64,' 부분을 포함해서 넘겨줄 수 있으므로, 순수 데이터만 추출합니다.
+            if ',' in image_b64:
+                image_b64 = image_b64.split(',')[1]
+
+            payload = {"image_b64": image_b64}
+            logger.info(f"=== 💨 [Agent Tool] search_ingredient_by_image 호출. Payload: {payload}")
+            response = await client.post(f"{INGREDIENT_SERVICE_URL}/search/image", json=payload)
+            logger.info(f"=== 💨💨 [Agent Tool] Tool 에서 /search/image 응답 받음 {response}")
+            response.raise_for_status()
+
+            # 1. API 응답에서 파이썬 딕셔너리(내용물)를 추출합니다.
+            result_data = response.json()
+
+            # ⭐️ 핵심: 추출한 파이썬 딕셔너리를 표준 JSON 문자열로 변환하여 반환합니다.
+            return json.dumps(result_data, ensure_ascii=False)
+        
+     # ⭐️ HTTP 요청 관련 예외를 여기서 직접 처리합니다!
+    except httpx.HTTPStatusError as e:
+        # 4xx, 5xx 에러가 발생하면, 안정적인 JSON 형식으로 에러 메시지를 반환합니다.
+        error_content = e.response.json() if "application/json" in e.response.headers.get("content-type", "") else e.response.text
+        logger.error(f"--- [Agent Tool] API 호출 실패 (HTTP {e.response.status_code}): {error_content}")
+        return json.dumps({
+            "error": f"이미지 분석 서비스에서 오류가 발생했습니다 (코드: {e.response.status_code}).",
+            "detail": error_content
+        })
+    except Exception as e:
+        # 그 외 네트워크 오류 등 모든 예외를 처리합니다.
+        logger.error(f"--- [Agent Tool] 예상치 못한 오류 발생: {e}", exc_info=True)
+        return json.dumps({"error": f"이미지 검색 중 알 수 없는 오류가 발생했습니다: {str(e)}"})
 
 
 @tool

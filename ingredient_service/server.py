@@ -1,10 +1,11 @@
 import uvicorn
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Body
 from typing import List, Union, Literal
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import httpx
 import os
+import base64
 
 # --- 설정 (파일 상단에 위치) ---
 # 실제 벡터 DB API의 주소를 환경 변수에서 가져옵니다.
@@ -113,26 +114,88 @@ async def search_by_text(request: Request):
 
 
 @app.post("/search/image")
-async def search_by_image(request: Request):
-    """이미지로 유사한 재료 상품을 검색합니다."""
-    body = await request.json()
-    image_data = body.get("image_data") # Base64 인코딩된 이미지 데이터라고 가정
-    if not image_data:
-        raise HTTPException(status_code=400, detail="image_data가 필요합니다.")
+async def search_by_image(
+     # ⭐️ body에서 image_b64 문자열을 직접 받도록 수정
+    image_b64: str = Body(..., embed=True),
+    top_k: int = 10,
+    history: str = "latest"
+):
+    """
+    이미지로 유사한 재료 상품을 검색합니다.
+    이 엔드포인트는 planning-agent로부터 요청을 받아,
+    실제 벡터 검색 API로 요청을 전달하는 '중개자(Proxy)' 역할을 합니다.
+    """
+    logger.info("=== 💚 [8004 서버] /search/image 요청 받음 💚 ===")
 
-    # 데모: 표준 스키마 빈 카트 응답
-    return {
-        "chatType": "cart",
-        "content": "이미지 검색은 아직 지원되지 않습니다.",
-        "recipes": [
-            {
-                "source": "ingredient_search",
-                "food_name": "",
-                "ingredients": [],
-                "recipe": [],
-            }
-        ],
-    }
+    try:
+            # 1. planning-agent로부터 받은 요청 본문(body)을 파싱합니다.
+            image_bytes = base64.b64decode(image_b64)   # Base64 문자열을 다시 이미지 바이트로 디코딩
+            
+            if not image_bytes:
+                logger.error("=== 💚 [8004 서버] 오류: 요청 본문에 'image_bytes' 필드가 없습니다.")
+                raise HTTPException(status_code=400, detail="'image_bytes' 필드가 필요합니다.")
+                
+            logger.info(f"=== 💚 [8004 서버] Base64 이미지 데이터 디코딩 완료 (길이: {len(image_bytes)}) 💚 ===")
+
+            # 2. ⭐️ 8000 서버로 전달할 form-data 생성
+            files = {'file': ('image.jpeg', image_bytes, 'image/jpeg')}     # 디코딩된 이미지 바이트를 실제 파일처럼 해서 벡터 DB로 전송
+            params = {'top_k': top_k, 'history': history}
+                # 실제 벡터 DB의 이미지 검색 URL을 지정합니다. (예시: /search/image)
+            target_url = f"{VECTOR_DB_API_URL}/search/image"
+            
+            logger.info(f"=== 💚 [8004 서버] 실제 벡터 DB로 요청 전송 시작. URL: {target_url}")
+
+            # 3. httpx를 사용해 실제 벡터 DB API를 비동기적으로 호출합니다.
+            async with httpx.AsyncClient() as client:
+                response = await client.post(target_url, files=files, params=params, timeout=30.0)
+                
+                logger.info(f"=== 💚 [8004 서버] 실제 벡터 DB로부터 응답 받음. Status: {response.status_code}")
+                
+                response.raise_for_status()     # HTTP 오류 발생 시 예외 발생
+                
+                search_result = response.json()
+                logger.info(f"=== 💚 [8004 서버] 최종 검색 결과: {search_result}")
+                logger.info("=== 💚 [8004 서버] 최종 검색 결과를 planning-agent로 반환합니다.")
+                return response.json()
+
+                # 4. planning-agent가 이해할 수 있는 표준 스키마로 정규화합니다.
+                # 텍스트 검색과 동일한 'cart' 포맷을 사용합니다.
+                # items = search_result.get("results", []) if isinstance(search_result, dict) else []
+                # products: List[dict] = []
+                # for it in items:
+                #     if not isinstance(it, dict):
+                #         continue
+                #     p = {
+                #         "product_name": str(it.get("product_name", it.get("name", ""))),
+                #         "price": it.get("price", 0),
+                #         "image_url": str(it.get("image_url", "")),
+                #         "product_address": str(it.get("product_address", "")),
+                #     }
+                #     products.append(p)
+
+                # payload = {
+                #     "chatType": "cart",
+                #     "content": "이미지와 관련된 상품을 찾았습니다.",
+                #     "recipes": [
+                #         {
+                #             "source": "ingredient_search",
+                #             "food_name": "이미지 기반 검색", # 이미지 검색이므로 특정 음식 이름 대신 일반적인 텍스트 사용
+                #             "ingredients": products,
+                #             "recipe": [],
+                #         }
+                #     ],
+                # }
+                # return payload
+                
+    except httpx.HTTPStatusError as e:
+            error_message = f"벡터 DB API 호출 중 HTTP 오류 발생: {e.response.status_code} - {e.response.text}"
+            logger.error(f"=== ❌ [8004 서버] {error_message}")
+            raise HTTPException(status_code=502, detail=error_message)
+        
+    except Exception as e:
+            logger.error(f"=== ❌ [8004 서버] 처리 중 알 수 없는 오류 발생: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="내부 서버 오류가 발생했습니다.")
+
 
 @app.post("/search/multimodal")
 async def search_by_multimodal(request: Request):

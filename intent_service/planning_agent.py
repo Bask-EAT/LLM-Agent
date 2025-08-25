@@ -333,24 +333,16 @@ def inject_image_data(state: AgentState) -> dict:
     # logger.info(f"--- [LangGraph] 💉 주입할 이미지 데이터: {image_to_inject} ---")
 
     if not image_to_inject:
-        logger.warning("--- [LangGraph] 💉 주입할 이미지 데이터가 없습니다 ---")
-        return {**state, "messages": state["messages"]}
-
-        # 가장 마지막 메시지 (AIMessage)를 가져옵니다.
-        logger.warning(
-            "--- [LangGraph] 💉 주입할 이미지 데이터가 없으므로, 아무 작업도 수행하지 않습니다. ---"
-        )
-        return {}  # 변경 사항 없음
+        logger.warning("--- [LangGraph] 💉 주입할 이미지 데이터가 없으므로, 아무 작업도 수행하지 않습니다. ---")
+        return {}  # 상태 변경 없음
+    
+    # 가장 마지막 메시지 (AIMessage)를 가져옵니다.
     last_message = state["messages"][-1]
     # logger.info(f"--- [LangGraph] 💉 마지막 메시지: {last_message} ---")
 
-    #     # 1. 기존 메시지 리스트에서 마지막 AI Message를 제거합니다.
-    #     messages_without_last = state["messages"][:-1]
     if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
-        logger.warning(
-            "--- [LangGraph] 💉 마지막 메시지에 tool_calls가 없으므로, 아무 작업도 수행하지 않습니다. ---"
-        )
-        return {}  # 변경 사항 없음
+        logger.warning("--- [LangGraph] 💉 마지막 메시지에 tool_calls가 없으므로, 아무 작업도 수행하지 않습니다. ---")
+        return {}  # 상태 변경 없음
 
     needs_update = False
     new_tool_calls = []
@@ -609,12 +601,14 @@ async def run_agent(input_data: dict):
     input_data: {"message": str, "image_b64": Optional[str]} 또는 {"chat_history": list}
     """
     logger.info("--- [STEP 0] Agent Start ---")
+    # logger.info(f"--- run_agent_and_store_result로부터 받은 input_data : {input_data}")
 
     try:
         # 채팅 히스토리 처리 (우선순위 1)
         chat_history = input_data.get("chat_history", [])
         user_message = input_data.get("message", "")
-        image_bytes = input_data.get("image")
+        # ✨ 수정: 이제 'image_b64' 필드에서 바로 Base64 문자열을 받습니다.
+        image_b64 = input_data.get("image_b64")
 
         # 채팅 히스토리가 있으면 우선 사용
         if chat_history and len(chat_history) > 0:
@@ -644,26 +638,15 @@ async def run_agent(input_data: dict):
         else:
             # 단일 메시지 처리 (기존 방식)
             logger.info(f"--- [STEP 1b] 단일 메시지 처리: {user_message} ---")
-
             inputs = {}  # inputs 딕셔너리를 먼저 초기화
-
-            if image_bytes:
-                import base64
-
-                image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-                # logger.info(f"--- image_b64: {image_b64} ---")
-                logger.info("--- [STEP 1c] 이미지 데이터가 포함되었습니다. ---")
-
-                # ⭐️⭐️⭐️ [모든 문제의 원흉을 해결하는 코드] ⭐️⭐️⭐️
-                # 사용자가 텍스트 없이 이미지만 보냈을 경우(user_message가 None이거나 비어있을 때),
-                # 대화의 문맥을 만들어주기 위한 기본 메시지를 설정합니다.
+            if image_b64:
+                logger.info("--- [STEP 1c] Base64 인코딩된 이미지 데이터가 포함되었습니다. ---")
                 if not user_message:
                     user_message = "이 이미지에 있는 상품 정보를 찾아줘."
                     logger.info(
                         f"--- [STEP 1d] 텍스트가 없어 기본 메시지 설정: '{user_message}' ---"
                     )
-
-                # 💡 [수정] HumanMessage의 content를 복잡한 리스트가 아닌 단순 문자열로 만듭니다.
+                # HumanMessage의 content를 복잡한 리스트가 아닌 단순 문자열로 만듭니다.
                 # 도구 선택 프롬프트가 인식할 수 있도록 이미지 첨부 사실을 텍스트에 명시적으로 추가합니다.
                 full_message = f"{user_message} [사용자가 이미지를 첨부했습니다]"
                 messages = [HumanMessage(content=full_message)]
@@ -671,7 +654,6 @@ async def run_agent(input_data: dict):
                     "messages": messages,
                     "image_b64": image_b64,
                 }  # 실제 데이터는 state에 저장하여 LangGraph로 전달합니다.
-
             else:
                 # 이미지가 없거나 텍스트만 있는 경우
                 messages = [
