@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bask Eat 로그인</title>
+  <script type="module">
+    // Firebase SDK 모듈 불러오기
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
+    import { getAuth, signInWithPopup, GoogleAuthProvider } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-auth.js";
+
+    // Firebase 웹 앱 설정
+    const firebaseConfig = {
+      apiKey: "AIzaSyCP1DcZNh_XeueQCqVqbVRWFhcp6KK6Qts",
+      authDomain: "bask-eat.firebaseapp.com",
+      projectId: "bask-eat",
+      storageBucket: "bask-eat.firebasestorage.app",
+      messagingSenderId: "579953258832",
+      appId: "1:579953258832:web:10860856b7e9b8ae527c55",
+      measurementId: "G-8DH02RGPQD"
+    };
+
+    // Firebase 초기화
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const provider = new GoogleAuthProvider();
+
+    // 로그인 버튼 클릭 핸들러
+    async function onLogin() {
+      try {
+        // Google 팝업 로그인
+        const result = await signInWithPopup(auth, provider);
+        const idToken = await result.user.getIdToken();
+
+        // 백엔드로 ID 토큰 전송 → JWT 발급
+        const response = await fetch("http://localhost:8080/api/auth/google", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ idToken })
+        });
+
+        if (!response.ok) {
+          throw new Error("서버 인증 실패");
+        }
+
+        const { token } = await response.json();
+
+        // JWT 저장 (HttpOnly 쿠키 대신 로컬스토리지 예시)
+        localStorage.setItem("jwtToken", token);
+
+        // 로그인 후 대시보드로 이동
+        window.location.href = "/dashboard.html";
+      } catch (err) {
+        alert("로그인 실패: " + err.message);
+      }
+    }
+
+    // 페이지 로드 시 버튼 이벤트 연결
+    window.addEventListener("DOMContentLoaded", () => {
+      document.getElementById("loginBtn").addEventListener("click", onLogin);
+    });
+  </script>
+  <style>
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: sans-serif;
+    }
+
+    #loginContainer {
+      text-align: center;
+    }
+
+    #loginBtn {
+      padding: 10px 20px;
+      font-size: 1.1rem;
+      cursor: pointer;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="loginContainer">
+    <h1>Bask Eat에 로그인</h1>
+    <button id="loginBtn">Google 계정으로 로그인</button>
+  </div>
+</body>
+
+</html>

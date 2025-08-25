@@ -1,0 +1,42 @@
+<!-- dashboard.html -->
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>대시보드</title>
+  <script>
+    async function loadConversations() {
+      const token = localStorage.getItem("jwtToken");
+      if (!token) {
+        window.location.href = "/login.html";
+        return;
+      }
+
+      try {
+        const res = await fetch("http://localhost:8080/api/conversations", {
+          headers: { "Authorization": `Bearer ${token}` }
+        });
+        if (!res.ok) throw new Error("목록 불러오기 실패");
+        const list = await res.json();
+        const ul = document.getElementById("convList");
+        list.forEach(c => {
+          const li = document.createElement("li");
+          li.textContent = `${c.title} — ${c.lastMessage}`;
+          ul.appendChild(li);
+        });
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+    window.addEventListener("DOMContentLoaded", loadConversations);
+  </script>
+</head>
+
+<body>
+  <h1>내 대화 목록</h1>
+  <ul id="convList"></ul>
+</body>
+
+</html>
