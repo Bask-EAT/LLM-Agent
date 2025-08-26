@@ -10,7 +10,7 @@ import base64
 # --- 설정 (파일 상단에 위치) ---
 # 실제 벡터 DB API의 주소를 환경 변수에서 가져옵니다.
 # .env 파일에 VECTOR_DB_API_URL="http://실제_벡터DB_주소" 와 같이 설정해야 합니다.
-VECTOR_DB_API_URL = os.getenv("VECTOR_DB_API_URL", "http://localhost:8000") # 예시: 기본값 설정
+VECTOR_DB_API_URL = os.getenv("VECTOR_DB_API_URL", "https://18735e681ce6.ngrok-free.app") # 예시: 기본값 설정
 DEFAULT_TOP_K = 10
 
 # 로깅 설정
