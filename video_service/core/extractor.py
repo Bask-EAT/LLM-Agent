@@ -5,7 +5,7 @@ from typing import TypedDict, List
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessagee
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 import logging
 from config import GEMINI_API_KEY

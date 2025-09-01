@@ -127,8 +127,8 @@ async def search_ingredient_by_image(image_b64: str) -> str:
 tools = [
     text_based_cooking_assistant,
     extract_recipe_from_youtube,
-    search_ingredient_by_text,
-    search_ingredient_by_image,
+    search_ingredient_by_text,  # 내부 처리로 변경됨
+    search_ingredient_by_image, # 내부 처리로 변경됨
 ]
 
 # 2. LLM 모델 설정
@@ -471,18 +471,33 @@ async def generate_final_answer(state):
             recipe_data = parsed_output.copy()
             if "source" not in recipe_data:
                 recipe_data["source"] = "text"
+            
+            # 선택지 제공 상황인지 확인 (ingredients와 recipe가 비어있고 answer에 선택지가 있는 경우)
+            answer_text = recipe_data.get("answer", "")
+            has_ingredients = recipe_data.get("ingredients") and len(recipe_data.get("ingredients", [])) > 0
+            has_recipe = recipe_data.get("recipe") and len(recipe_data.get("recipe", [])) > 0
+            is_choice_providing = ("번호" in answer_text or "말씀해" in answer_text or "원하시나요" in answer_text) and not (has_ingredients and has_recipe)
+            
+            if is_choice_providing:
+                # 선택지 제공 상황: chatType을 "chat"으로 설정
+                final_response = {
+                    "chatType": "chat",
+                    "answer": answer_text,
+                    "recipes": []
+                }
+            else:
+                # 완전한 레시피 데이터: chatType을 "recipe"로 설정
+                # 요리 제목 추출
+                food_name = recipe_data.get("food_name") or recipe_data.get("title") or "요리"
                 
-            # 요리 제목 추출
-            food_name = recipe_data.get("food_name", recipe_data.get("title", "요리"))
-            
-            # 답변 메시지 생성
-            answer_message = f"네, 요청하신 {food_name}의 레시피를 알려드릴게요."
-            
-            final_response = {
-                "chatType": "recipe",
-                "answer": answer_message,
-                "recipes": [recipe_data]
-            }
+                # 답변 메시지 생성
+                answer_message = f"네, 요청하신 {food_name}의 레시피를 알려드릴게요."
+                
+                final_response = {
+                    "chatType": "recipe",
+                    "answer": answer_message,
+                    "recipes": [recipe_data]
+                }
             
             # JSON 문자열로 변환
             import json
