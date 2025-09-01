@@ -39,272 +39,104 @@ class TextAgent:
         self.recommenders = Recommenders(self.llm)
         self.recipes = Recipes(self.llm)
         self.substitutions = Substitutions(self.llm)
+        
+        # 메모리 저장 비활성화: 모든 상태는 쿼리 기반으로만 처리
+        # 데이터베이스에만 저장, 메모리에는 상태 저장하지 않음
 
-        self.conversation_history: List[Dict[str, str]] = []
-        self.last_dish: Optional[str] = None
-        self.last_ingredients: List[str] = []
-        self.last_intent: Optional[str] = None
-        self.last_suggested_dishes: List[str] = []
-        self.last_ingredients_ts: float = 0.0
-        self.last_suggested_ts: float = 0.0
-        self.last_suggested_turn: int = 0
-        self.cache_ttl_sec: int = CACHE_TTL_SECONDS
-        self.turn_idx: int = 0
-        self.last_ingredients_turn: int = 0
-        self.last_style: str = ""
-        self.last_style_ts: float = 0.0
 
-    def _add_assistant_response(self, content: str):
-        # 히스토리 비활성화: 서버는 대화 로그를 저장하지 않음
-        return
-
-    def _get_recent_context(self, count: int = 3) -> str:
-        # 히스토리 비활성화: 항상 빈 컨텍스트 반환
-        return ""
-
-    def _is_fresh(self, ts: float) -> bool:
-        if not ts:
-            return False
-        return (time.time() - ts) <= self.cache_ttl_sec
 
     def _has_explicit_new_intent(self, message: str) -> bool:
+        """명시적 새 의도 키워드 감지"""
         text = (message or "").lower()
         return any(k in text for k in EXPLICIT_NEW_INTENT_KEYWORDS)
 
-    def _is_other_in_same_style(self, message: str) -> bool:
-        text = (message or "").lower().strip()
-        if not text:
-            return False
-        return any(k in text for k in OTHER_REQUEST_KEYWORDS) and bool(self.last_style) and self._is_fresh(self.last_style_ts)
-
     def _is_other_request(self, message: str) -> bool:
-        """사용자가 '다른 거' 계열을 요청했는지 여부(스타일 보유 여부 무관)."""
+        """사용자가 '다른 거' 계열을 요청했는지 여부"""
         text = (message or "").lower().strip()
         if not text:
             return False
         return any(k in text for k in OTHER_REQUEST_KEYWORDS)
 
-    def _is_cache_valid(self) -> bool:
-        time_ok = self._is_fresh(self.last_ingredients_ts)
-        turn_ok = (self.turn_idx - self.last_ingredients_turn) <= 3 if self.last_ingredients_turn else False
-        return time_ok and turn_ok and bool(self.last_ingredients)
-
     def _is_style_followup(self, message: str) -> bool:
+        """스타일 후속 요청인지 확인"""
         text = (message or "").lower().strip()
         if not text:
             return False
         has_style = any(k in text for k in STYLE_KEYWORDS)
         has_non_style = any(k in text for k in NON_STYLE_HINTS)
-        recent_allows_follow = self.last_intent in {"INGREDIENTS_TO_DISHES", "RECIPE", "INGREDIENTS"}
-        return has_style and not has_non_style and recent_allows_follow and bool(self.last_ingredients) and self._is_fresh(self.last_ingredients_ts)
+        return has_style and not has_non_style
 
     async def process_message(self, message: str) -> Dict[str, Any]:
+        """쿼리 기반 처리: 메모리 상태에 의존하지 않고 입력 메시지만으로 처리"""
         try:
-            self.turn_idx += 1
-            # 히스토리 비활성화: 사용자 메시지 저장하지 않음
+            logger.info(f"🔍 [TextAgent] 쿼리 기반 메시지 처리 시작: '{message}'")
 
-            selection_result = await self._handle_selection_if_any(message)
-            if selection_result is not None:
-                return selection_result
-
-            if self._has_explicit_new_intent(message):
-                self.last_ingredients = []
-                self.last_ingredients_ts = 0.0
-                self.last_ingredients_turn = 0
-                self.last_suggested_dishes = []
-                self.last_suggested_ts = 0.0
-
-            if self._is_other_in_same_style(message) and self._is_cache_valid():
-                result = await self.recommend_dishes_by_ingredients_with_style(message, self.last_ingredients)
-                response_text = result.get("answer", "추천을 찾을 수 없습니다.")
-                self._add_assistant_response(response_text)
-                self.last_intent = "INGREDIENTS_TO_DISHES"
-                return {"answer": response_text, "food_name": None, "ingredients": result.get("extracted_ingredients", self.last_ingredients), "recipe": []}
-
-            # last_style이 없더라도 '다른 거'라면, 최근 재료 캐시로 동일 맥락 재추천(스타일 가정 없음)
-            if self._is_other_request(message) and self._is_cache_valid() and not self.last_style:
-                ingredients_str = ", ".join([
-                    (ing.get("item") if isinstance(ing, dict) and ing.get("item") else str(ing))
-                    for ing in self.last_ingredients
-                ])
-                result = await self.recommend_dishes_by_ingredients(ingredients_str)
-                response_text = result.get("answer", "추천을 찾을 수 없습니다.")
-                self._add_assistant_response(response_text)
-                self.last_intent = "INGREDIENTS_TO_DISHES"
-                return {"answer": response_text, "food_name": None, "ingredients": result.get("extracted_ingredients", self.last_ingredients), "recipe": []}
-
-            if self._is_style_followup(message) and self._is_cache_valid():
-                result = await self.recommend_dishes_by_ingredients_with_style(message, self.last_ingredients)
-                response_text = result.get("answer", "해당 재료로 만들 수 있는 요리를 찾을 수 없습니다.")
-                self._add_assistant_response(response_text)
-                self.last_intent = "INGREDIENTS_TO_DISHES"
-                return {"answer": response_text, "food_name": None, "ingredients": result.get("extracted_ingredients", self.last_ingredients), "recipe": []}
-
-            # 동일 스타일 내 '다른 거' 요청이지만 재료 캐시가 없을 때: 최근 스타일로 카테고리 재추천
-            if self._is_other_request(message) and getattr(self, "last_style", "") and not self._is_cache_valid():
-                synthetic_message = self.last_style
-                result = self.recommenders.recommend_by_category(synthetic_message, avoid=self.last_suggested_dishes)
-                items = result.get("items", []) if isinstance(result, dict) else []
-                category_label = result.get("category", self.last_style) if isinstance(result, dict) else self.last_style
-                # 디듀프: 이전 제안 및 현재 목록 내 중복 제거
-                def _norm_cat(n: str) -> str:
-                    import re
-                    s = (n or "").lower().strip()
-                    s = re.sub(r"[\s·ㆍ・/|()-]+", "", s)
-                    s = re.sub(r"[^a-z가-힣]", "", s)
-                    return s
-                avoid_set = {_norm_cat(x) for x in getattr(self, "last_suggested_dishes", [])}
-                seen = set()
-                deduped = []
-                for it in items:
-                    name = it if isinstance(it, str) else (it.get("name", "") if isinstance(it, dict) else str(it))
-                    key = _norm_cat(name)
-                    if not name or key in seen or key in avoid_set:
-                        continue
-                    seen.add(key)
-                    deduped.append(it)
-                items = deduped
-                response_text = ""
-                if category_label == "한식":
-                    for i, item in enumerate(items, 1):
-                        name = item if isinstance(item, str) else (item.get("name", "") if isinstance(item, dict) else str(item))
-                        if name:
-                            response_text += f"{i}. {name}\n"
-                else:
-                    for i, item in enumerate(items, 1):
-                        if isinstance(item, dict):
-                            name = item.get("name", "")
-                            desc = item.get("description", "")
-                            line = name
-                            if desc:
-                                line += f" — {desc}"
-                            if line.strip():
-                                response_text += f"{i}. {line}\n"
-                        else:
-                            response_text += f"{i}. {item}\n"
-                if not response_text.strip():
-                    response_text = "죄송합니다. 추천 요리를 찾을 수 없습니다."
-                else:
-                    response_text += "\n원하는 요리의 레시피를 알려드릴까요? 번호나 요리명을 말씀해 주세요."
-
-                self._add_assistant_response(response_text)
-                self.last_intent = "CATEGORY"
-                self.last_style = category_label or self.last_style
-                self.last_style_ts = time.time()
-                if category_label == "한식":
-                    self.last_suggested_dishes = [str(x).strip() for x in items if (isinstance(x, str) and x.strip()) or (isinstance(x, dict) and x.get("name"))]
-                else:
-                    self.last_suggested_dishes = [x.get("name", "").strip() for x in items if isinstance(x, dict) and x.get("name")]
-                self.last_suggested_ts = time.time()
-                self.last_suggested_turn = self.turn_idx
-                return {"answer": response_text, "food_name": None, "ingredients": [], "recipe": []}
-
+            # 메시지에서 직접 정보 추출하여 처리
             intent = self.intent_classifier.classify(message, "")
+            logger.info(f"🔍 [TextAgent] 분류된 의도: {intent}")
 
             if intent == "CATEGORY":
-                if self.last_ingredients and self._is_style_followup(message):
-                    result = await self.recommend_dishes_by_ingredients_with_style(message, self.last_ingredients)
-                    response_text = result.get("answer", "재료로 만들 수 있는 요리를 찾을 수 없습니다.")
-                    self._add_assistant_response(response_text)
-                    self.last_intent = "INGREDIENTS_TO_DISHES"
-                    return {"answer": response_text, "food_name": None, "ingredients": result.get("extracted_ingredients", self.last_ingredients), "recipe": []}
+                # 메시지에서 직접 스타일 정보 추출
+                if self._is_style_followup(message):
+                    # 스타일 후속 요청인 경우 메시지에서 재료 정보 추출
+                    extracted_ingredients = self._extract_ingredients_from_message(message)
+                    if extracted_ingredients:
+                        result = await self.recommend_dishes_by_ingredients_with_style(message, extracted_ingredients)
+                        response_text = result.get("answer", "재료로 만들 수 있는 요리를 찾을 수 없습니다.")
+                        return {"answer": response_text, "food_name": None, "ingredients": result.get("extracted_ingredients", extracted_ingredients), "recipe": []}
+                
+                # 일반 카테고리 추천
+                result = self.recommenders.recommend_by_category(message, avoid=[])
+                items = result.get("items", []) if isinstance(result, dict) else []
+                if not isinstance(result, dict) or not items or (result.get("category") == "미정"):
+                    response_text = "혹시 특별히 끌리는 요리 스타일(한식, 중식, 이탈리아식 등)이 있으신가요? 말씀해주시면 거기에 맞춰 맛있는 메뉴를 추천해드릴게요!"
                 else:
-                    result = self.recommenders.recommend_by_category(message, avoid=self.last_suggested_dishes)
-                    items = result.get("items", []) if isinstance(result, dict) else []
-                    if not isinstance(result, dict) or not items or (result.get("category") == "미정"):
-                        # 스타일 유도 멘트만 출력
-                        response_text = "혹시 특별히 끌리는 요리 스타일(한식, 중식, 이탈리아식 등)이 있으신가요? 말씀해주시면 거기에 맞춰 맛있는 메뉴를 추천해드릴게요!"
-                        # 번호 선택 방지 위해 캐시 초기화
-                        self.last_suggested_dishes = []
-                        self.last_suggested_turn = 0
+                    category_label = result.get("category", "한식")
+                    response_text = ""
+                    if category_label == "한식":
+                        for i, item in enumerate(items, 1):
+                            name = item if isinstance(item, str) else item.get("name", "")
+                            if name:
+                                response_text += f"{i}. {name}\n"
                     else:
-                        category_label = result.get("category", "한식")
-                        # 디듀프: 이전 제안 및 현재 목록 내 중복 제거
-                        def _norm_cat(n: str) -> str:
-                            import re
-                            s = (n or "").lower().strip()
-                            s = re.sub(r"[\s·ㆍ・/|()-]+", "", s)
-                            s = re.sub(r"[^a-z가-힣]", "", s)
-                            return s
-                        avoid_set = {_norm_cat(x) for x in getattr(self, "last_suggested_dishes", [])}
-                        seen = set()
-                        deduped = []
-                        for it in items:
-                            name = it if isinstance(it, str) else (it.get("name", "") if isinstance(it, dict) else str(it))
-                            key = _norm_cat(name)
-                            if not name or key in seen or key in avoid_set:
-                                continue
-                            seen.add(key)
-                            deduped.append(it)
-                        items = deduped
-                        response_text = ""
-                        if category_label == "한식":
-                            for i, item in enumerate(items, 1):
-                                name = item if isinstance(item, str) else item.get("name", "")
-                                if name:
-                                    response_text += f"{i}. {name}\n"
-                        else:
-                            for i, item in enumerate(items, 1):
-                                if isinstance(item, dict):
-                                    name = item.get("name", "")
-                                    desc = item.get("description", "")
-                                    line = name
-                                    if desc:
-                                        line += f" — {desc}"
-                                    if line.strip():
-                                        response_text += f"{i}. {line}\n"
-                                else:
-                                    response_text += f"{i}. {item}\n"
-                        if not response_text.strip():
-                            response_text = "죄송합니다. 추천 요리를 찾을 수 없습니다."
-                        else:
-                            response_text += "\n원하는 요리의 레시피를 알려드릴까요? 번호나 요리명을 말씀해 주세요."
+                        for i, item in enumerate(items, 1):
+                            if isinstance(item, dict):
+                                name = item.get("name", "")
+                                desc = item.get("description", "")
+                                line = name
+                                if desc:
+                                    line += f" — {desc}"
+                                if line.strip():
+                                    response_text += f"{i}. {line}\n"
+                            else:
+                                response_text += f"{i}. {item}\n"
+                    if not response_text.strip():
+                        response_text = "죄송합니다. 추천 요리를 찾을 수 없습니다."
+                    else:
+                        response_text += "\n원하는 요리의 레시피를 알려드릴까요? 번호나 요리명을 말씀해 주세요."
 
-                    self._add_assistant_response(response_text)
-                    self.last_intent = "CATEGORY"
-                    # CATEGORY 결과의 카테고리를 최근 스타일로 기억하여 '다른 거' 재추천에 활용
-                    if isinstance(result, dict) and result.get("category") and result.get("category") != "미정":
-                        self.last_style = result.get("category") or ""
-                        self.last_style_ts = time.time()
-                    if (result.get("category") or "") == "한식":
-                        self.last_suggested_dishes = [str(x).strip() for x in items if isinstance(x, str) and x.strip()]
-                    else:
-                        self.last_suggested_dishes = [x.get("name", "").strip() for x in items if isinstance(x, dict) and x.get("name")]
-                    self.last_suggested_ts = time.time()
-                    self.last_suggested_turn = self.turn_idx
-                    return {"answer": response_text, "food_name": None, "ingredients": [], "recipe": []}
+                return {"answer": response_text, "food_name": None, "ingredients": [], "recipe": []}
 
             elif intent == "INGREDIENTS_TO_DISHES":
                 result = await self.recommend_dishes_by_ingredients(message)
                 response_text = result.get("answer", "재료로 만들 수 있는 요리를 찾을 수 없습니다.")
                 extracted_ingredients = result.get("extracted_ingredients", [])
-                if extracted_ingredients:
-                    self.last_ingredients = extracted_ingredients
-                    self.last_ingredients_ts = time.time()
-                    self.last_ingredients_turn = self.turn_idx
-                self._add_assistant_response(response_text)
-                self.last_intent = "INGREDIENTS_TO_DISHES"
                 return {"answer": response_text, "food_name": None, "ingredients": [], "recipe": []}
 
             elif intent == "RECIPE":
                 dish = self._extract_dish_smart(message)
-                result = self.recipes.handle_vague_dish(dish) if self.recipes.is_vague_dish(dish) else self.recipes.get_recipe(dish)
+                result = self.recipes.handle_vague_dish(dish)
                 if result.get("type") == "vague_dish":
                     varieties = result.get("varieties", [])
                     response_text = f"어떤 {dish} 레시피를 원하시나요?\n\n"
                     for i, variety in enumerate(varieties, 1):
                         response_text += f"{i}. {variety}\n"
                     response_text += f"\n다른 원하시는 {dish} 종류가 있으시면 말씀해주세요!"
-                    self._add_assistant_response(response_text)
-                    self.last_suggested_dishes = [str(v).strip() for v in varieties if isinstance(v, str) and v.strip()]
-                    self.last_suggested_ts = time.time()
                     return {"answer": response_text, "food_name": None, "ingredients": [], "recipe": []}
                 else:
                     title = result.get("title", dish)
                     ingredients = result.get("ingredients", [])
                     steps = result.get("steps", [])
-                    if isinstance(ingredients, list):
-                        self.last_ingredients = ingredients
                     response_text = "📋 [재료]\n"
                     for i, ingredient in enumerate(ingredients, 1):
                         response_text += f"{i}. {ingredient}\n"
@@ -312,7 +144,6 @@ class TextAgent:
                     for i, step in enumerate(steps, 1):
                         response_text += f"{i}. {step}\n"
                     simple_answer = f"네. {title}의 레시피를 알려드릴게요."
-                    self._add_assistant_response(response_text)
                     return {"answer": simple_answer, "food_name": title, "ingredients": ingredients, "recipe": steps}
 
             elif intent == "INGREDIENTS":
@@ -325,9 +156,6 @@ class TextAgent:
                     for i, ingredient in enumerate(result, 1):
                         response_lines.append(f"{i}. {ingredient}")
                     response_text = "\n".join(response_lines)
-                    if isinstance(result, list):
-                        self.last_ingredients = result
-                self._add_assistant_response(response_text)
                 return {"answer": response_text, "food_name": dish, "ingredients": result, "recipe": []}
 
             elif intent == "TIP":
@@ -341,7 +169,6 @@ class TextAgent:
                     for i, tip in enumerate(result, 1):
                         response_text += f"{i}. {tip}\n"
                     response_text += f"\n{dish} 레시피나 재료도 궁금하시면 말씀해주세요!"
-                self._add_assistant_response(response_text)
                 return {"answer": response_text, "food_name": dish, "ingredients": [], "recipe": result}
 
             elif intent == "SUBSTITUTE":
@@ -373,7 +200,6 @@ class TextAgent:
                             if line.strip():
                                 lines.append(line)
                         response_text = "\n".join(lines)
-                self._add_assistant_response(response_text)
                 return {"answer": response_text, "food_name": dish, "ingredients": [target_ing], "recipe": []}
 
             elif intent == "NECESSITY":
@@ -385,12 +211,10 @@ class TextAgent:
                 response_text = f"가능: {'예' if possible else '아니오'}"
                 if flavor_change:
                     response_text += f"\n맛 변화: {flavor_change}"
-                self._add_assistant_response(response_text)
                 return {"answer": response_text, "food_name": dish, "ingredients": [ingredient] if ingredient else [], "recipe": []}
 
             else:
                 response_text = "요리 관련 질문을 해주세요. 레시피, 재료, 조리 팁 등 무엇이든 도와드릴 수 있어요!"
-                self._add_assistant_response(response_text)
                 return {"answer": response_text, "food_name": None, "ingredients": [], "recipe": []}
         except Exception as e:
             logger.error(f"메시지 처리 중 오류: {e}")
@@ -398,20 +222,39 @@ class TextAgent:
             return {"answer": error_message, "food_name": None, "ingredients": [], "recipe": []}
 
     def _extract_dish_smart(self, message: str) -> str:
-        if any(pronoun in message for pronoun in PRONOUNS):
-            if self.last_dish:
-                return self.last_dish
+        """메시지에서 직접 요리명 추출 (메모리 상태에 의존하지 않음)"""
         dish = find_dish_by_pattern(message)
         if dish:
-            self.last_dish = dish
             return dish
-        # fallback: keep last dish or unknown
-        return self.last_dish or "알 수 없는 요리"
+        return "알 수 없는 요리"
+    
+    def _extract_ingredients_from_message(self, message: str) -> List[str]:
+        """메시지에서 직접 재료 정보 추출"""
+        # 간단한 재료 추출 로직 (실제 구현에서는 더 정교한 NLP 사용 가능)
+        import re
+        ingredients = []
+        
+        # 일반적인 재료 패턴 매칭
+        ingredient_patterns = [
+            r'([가-힣]+)\s*(\d+[가-힣]*)\s*(개|마리|장|줄기|뿌리|개)',
+            r'([가-힣]+)\s*(\d+[가-힣]*)\s*(g|kg|ml|l|컵|큰술|작은술)',
+            r'([가-힣]+)\s*(약간|조금|적당히)',
+            r'([가-힣]+)\s*(\d+[가-힣]*)',
+        ]
+        
+        for pattern in ingredient_patterns:
+            matches = re.findall(pattern, message)
+            for match in matches:
+                if len(match) >= 2:
+                    ingredient = f"{match[0]} {match[1]}"
+                    if len(match) > 2:
+                        ingredient += f" {match[2]}"
+                    ingredients.append(ingredient.strip())
+        
+        return ingredients
 
     def _extract_ingredient_to_substitute(self, message: str) -> str:
-        candidate_from_inventory = match_ingredient_from_inventory(message, self.last_ingredients)
-        if candidate_from_inventory:
-            return candidate_from_inventory
+        """메시지에서 대체할 재료 추출 (메모리 상태에 의존하지 않음)"""
         patterns = [
             r"([가-힣A-Za-z]+)\s*대신",
             r"([가-힣A-Za-z]+)\s*없으면",
@@ -428,8 +271,7 @@ class TextAgent:
             if match:
                 raw_ing = match.group(1).strip()
                 if 1 < len(raw_ing) < 30:
-                    mapped = map_to_inventory(raw_ing, self.last_ingredients)
-                    return mapped or raw_ing
+                    return raw_ing
         return ""
 
     def _extract_explicit_substitute_name(self, message: str) -> str:
@@ -447,6 +289,7 @@ class TextAgent:
         return ""
 
     async def recommend_dishes_by_ingredients(self, message: str) -> Dict:
+        """재료 기반 요리 추천 (메모리 상태에 의존하지 않음)"""
         prompt = f"""
         당신은 한식 전문가입니다. 사용자가 요청한 재료로 만들 수 있는 한식 요리를 추천해주세요.
 
@@ -487,28 +330,10 @@ class TextAgent:
             return {"answer": "재료 분석 중 오류가 발생했습니다. 다시 시도해주세요.", "extracted_ingredients": []}
         ingredients = data.get("ingredients", [])
         dishes = data.get("dishes", [])
-        # 후처리 디듀프: 이전 추천과 자체 중복 제거
-        def _norm(s: str) -> str:
-            import re
-            s = (s or "").lower().strip()
-            s = re.sub(r"[\s·ㆍ・/|()-]+", "", s)
-            s = re.sub(r"[^a-z가-힣]", "", s)
-            return s
-        avoid_set = set()
-        if getattr(self, "last_suggested_dishes", None):
-            avoid_set = {_norm(x) for x in self.last_suggested_dishes}
-        seen = set()
-        filtered = []
-        for d in dishes or []:
-            name = (d.get("name") if isinstance(d, dict) else str(d)).strip()
-            key = _norm(name)
-            if not name or key in seen or key in avoid_set:
-                continue
-            seen.add(key)
-            filtered.append(d)
-        dishes = filtered
+        
         if not dishes:
             return {"answer": "해당 재료로 만들 수 있는 요리를 찾을 수 없습니다.", "extracted_ingredients": ingredients, "food_name": None, "recipe": []}
+        
         response_text = f"다음 재료들로 만들 수 있는 한식 요리를 추천드려요:\n\n"
         response_text += "\n🍳 [추천 요리]\n"
         for i, dish in enumerate(dishes, 1):
@@ -523,28 +348,18 @@ class TextAgent:
                 response_text += f"{i}. {dish}\n"
         response_text += "\n원하는 요리 형식이 있으신가요? (프랑스식, 이탈리아식, 미국식 등)"
         response_text += "\n또는 위 요리 중 어떤 것의 레시피를 알고 싶으시면 번호나 요리명을 말씀해주세요!"
-        self.last_suggested_dishes = [
-            (d.get("name") if isinstance(d, dict) else str(d)).strip() for d in dishes if (isinstance(d, dict) and d.get("name")) or isinstance(d, str)
-        ]
-        self.last_suggested_ts = time.time()
-        self.last_suggested_turn = self.turn_idx
+        
         return {"answer": response_text, "extracted_ingredients": ingredients, "recommended_dishes": dishes}
 
-    async def recommend_dishes_by_ingredients_with_style(self, message: str, last_ingredients: List[str]) -> Dict:
+    async def recommend_dishes_by_ingredients_with_style(self, message: str, ingredients: List[str]) -> Dict:
+        """스타일 기반 재료 요리 추천 (메모리 상태에 의존하지 않음)"""
         lower_msg = message.lower()
         inferred = next((c for c in CUISINE_PROFILES if any(k in lower_msg or k in message for k in c["keywords"])), None)
         if inferred is None:
-            # 스타일 키워드가 없으면, 최근 스타일이 있으면 그것을 사용하고, 없으면 명확히 요청
-            if getattr(self, "last_style", ""):
-                inferred = next((c for c in CUISINE_PROFILES if c["key"] == self.last_style), None)
-            if inferred is None:
-                # 선택 번호 매핑 혼선을 막기 위해 추천 캐시를 비움
-                self.last_suggested_dishes = []
-                self.last_suggested_turn = 0
-                return {"answer": "원하시는 요리 스타일을 알려주세요. (예: 프랑스식, 이탈리아식, 미국식 등)", "extracted_ingredients": last_ingredients}
+            return {"answer": "원하시는 요리 스타일을 알려주세요. (예: 프랑스식, 이탈리아식, 미국식 등)", "extracted_ingredients": ingredients}
+        
         category_key = inferred["key"]
-        chef = inferred["chef"]
-        ingredients_str = ", ".join(last_ingredients)
+        ingredients_str = ", ".join(ingredients)
         prompt = f"""
         당신은 {category_key} 요리 전문가입니다. 기존 재료를 활용해 {category_key} 스타일 요리를 추천해주세요.
 
@@ -558,7 +373,6 @@ class TextAgent:
         - 코드 블록이나 다른 마크다운 문법을 사용하지 마세요
         - 위 재료들을 반드시 주재료로 사용하는 {category_key} 요리만 추천하세요
         - 모든 출력은 한국어로 작성하세요. 요리명은 한국어 표기를 우선 사용하고, 필요하면 괄호에 원어를 병기하세요.
-        - 아래 목록과 '이름이 겹치거나 같은 계열/변형'은 제외하세요:
 
         JSON 응답 형식(정확히 따르세요):
         {{
@@ -572,31 +386,14 @@ class TextAgent:
         """
         data = self.llm.generate_json(prompt)
         if not isinstance(data, dict):
-            return {"answer": f"{category_key} 스타일 요리 추천 중 오류가 발생했습니다. 다시 시도해주세요.", "extracted_ingredients": last_ingredients}
+            return {"answer": f"{category_key} 스타일 요리 추천 중 오류가 발생했습니다. 다시 시도해주세요.", "extracted_ingredients": ingredients}
+        
         style = data.get("style", category_key)
         dishes = data.get("dishes", [])
-        # 후처리 디듀프: 이전 추천과 자체 중복 제거
-        def _norm(s: str) -> str:
-            import re
-            s = (s or "").lower().strip()
-            s = re.sub(r"[\s·ㆍ・/|()-]+", "", s)
-            s = re.sub(r"[^a-z가-힣]", "", s)
-            return s
-        avoid_set = set()
-        if getattr(self, "last_suggested_dishes", None):
-            avoid_set = {_norm(x) for x in self.last_suggested_dishes}
-        seen = set()
-        filtered = []
-        for d in dishes or []:
-            name = (d.get("name") if isinstance(d, dict) else str(d)).strip()
-            key = _norm(name)
-            if not name or key in seen or key in avoid_set:
-                continue
-            seen.add(key)
-            filtered.append(d)
-        dishes = filtered
+        
         if not dishes:
-            return {"answer": f"해당 재료로 만들 수 있는 {category_key} 요리를 찾을 수 없습니다.", "extracted_ingredients": last_ingredients}
+            return {"answer": f"해당 재료로 만들 수 있는 {category_key} 요리를 찾을 수 없습니다.", "extracted_ingredients": ingredients}
+        
         response_text = f"{style} 스타일 추천 요리:\n\n"
         for i, dish in enumerate(dishes, 1):
             if isinstance(dish, dict):
@@ -609,49 +406,43 @@ class TextAgent:
             else:
                 response_text += f"{i}. {dish}\n"
         response_text += "\n원하는 요리의 레시피를 알려드릴까요? 번호(예: 1번)나 요리명을 말씀해 주세요."
-        self.last_suggested_dishes = [
-            (d.get("name") if isinstance(d, dict) else str(d)).strip() for d in dishes if (isinstance(d, dict) and d.get("name")) or isinstance(d, str)
-        ]
-        self.last_suggested_ts = time.time()
-        self.last_style = style
-        self.last_style_ts = time.time()
-        self.last_suggested_turn = self.turn_idx
-        return {"answer": response_text, "extracted_ingredients": last_ingredients, "style": style, "recommended_dishes": dishes}
+        
+        return {"answer": response_text, "extracted_ingredients": ingredients, "style": style, "recommended_dishes": dishes}
 
     async def _handle_selection_if_any(self, message: str):
+        """번호 선택 처리 (메모리 상태에 의존하지 않음)"""
         import re
         text = (message or "").strip()
-        if not text:
+        logger.info(f"🔍 [TextAgent] 번호 선택 체크 시작: '{text}'")
+        
+        if not text or not re.search(r"\d", text):
             return None
-        if not re.search(r"\d", text):
-            return None
-        if not getattr(self, "last_suggested_dishes", None):
-            return None
-        # 직전 추천 직후의 선택만 허용하여 오래된 목록으로의 잘못된 매핑을 방지
-        if not getattr(self, "last_suggested_turn", 0) or (self.turn_idx - self.last_suggested_turn) > 1:
-            return None
+            
+        # 메시지에서 숫자 추출
         indices = re.findall(r"\d+", text)
         if not indices:
             return None
-        unique_idxs: List[int] = []
-        for s in indices:
-            try:
-                n = int(s)
-                if n >= 1 and n <= len(self.last_suggested_dishes) and n not in unique_idxs:
-                    unique_idxs.append(n)
-            except Exception:
-                continue
-        if not unique_idxs:
-            return None
-        chosen_dishes = [self.last_suggested_dishes[i - 1] for i in unique_idxs]
-        main_dish = chosen_dishes[0]
-        recipe = self.recipes.get_recipe(main_dish)
-        answer_lines: List[str] = []
-        if len(chosen_dishes) > 1:
-            answer_lines.append("여러 개를 선택하셨네요. 먼저 1개 레시피부터 안내드릴게요. 나머지 요리도 원하시면 다시 번호를 말씀해주세요.")
-        answer_lines.append(f"네. {recipe.get('title', main_dish)}의 레시피를 알려드릴게요.")
-        self._add_assistant_response("\n".join(answer_lines))
-        self.last_intent = "RECIPE"
-        return {"answer": "\n".join(answer_lines), "food_name": recipe.get("title", main_dish), "ingredients": recipe.get("ingredients", []), "recipe": recipe.get("steps", recipe.get("recipe", []))}
+            
+        # 숫자가 포함된 경우 일반적인 요리명으로 처리
+        # 예: "1번" -> "1번 요리" 또는 "첫 번째 요리"
+        number = indices[0]
+        try:
+            num = int(number)
+            if 1 <= num <= 10:  # 1-10번까지만 처리
+                # 번호를 요리명으로 변환하는 간단한 로직
+                dish_names = ["첫 번째", "두 번째", "세 번째", "네 번째", "다섯 번째", 
+                            "여섯 번째", "일곱 번째", "여덟 번째", "아홉 번째", "열 번째"]
+                if num <= len(dish_names):
+                    dish_name = f"{dish_names[num-1]} 요리"
+                    recipe = self.recipes.get_recipe(dish_name)
+                    if recipe and recipe.get("title"):
+                        return {"answer": f"네. {recipe.get('title')}의 레시피를 알려드릴게요.", 
+                               "food_name": recipe.get("title"), 
+                               "ingredients": recipe.get("ingredients", []), 
+                               "recipe": recipe.get("steps", [])}
+        except ValueError:
+            pass
+            
+        return None
 
 

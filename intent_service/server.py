@@ -186,36 +186,35 @@ def count_youtube_urls(message: str) -> int:
     return len(youtube_patterns)
 
 
-# 작업 상태와 결과를 저장할 인메모리 딕셔너리
-# (서버 재시작 시 초기화됨. 영구 보관이 필요하면 Redis나 DB 사용)
-jobs = {}
+# 백엔드 호환성을 위한 임시 결과 저장 (메모리 저장 최소화)
+# 실제 운영에서는 데이터베이스에 저장해야 함
+temp_results = {}
 
-async def run_agent_and_store_result(job_id: str, input_data: dict):
+async def run_agent_direct(input_data: dict):
     """
-    백그라운드에서 에이전트를 실행하고 결과를 jobs 딕셔너리에 저장하는 함수
+    에이전트를 직접 실행하고 결과를 임시 저장 (백엔드 호환성)
     """
-    logger.info(f"=== 🤍Background-Task-{job_id}: 작업 시작. ===")
-    jobs[job_id] = {"status": "processing", "start_time": time.time()}
+    logger.info(f"=== 🤍Direct-Agent: 작업 시작. ===")
     try:
         result = await run_agent(input_data)
-        logger.info(f"=== 🤍❤ Agent 최종 응답: {result} ❤🤍 ===")      # ★★ 최종적으로 클라이언트에게 반환되는 것(dict형태) ★★
-        jobs[job_id] = {"status": "completed", "result": result}      
-        logger.info(f"=== 🤍❤ Background-Task-{job_id}: 작업 완료. ❤🤍 ===")
+        logger.info(f"=== 🤍❤ Agent 최종 응답: {result} ❤🤍 ===")
+        logger.info(f"=== 🤍❤ Direct-Agent: 작업 완료. ❤🤍 ===")
+        return result
     except Exception as e:
-        logger.error(f"=== 🤍Background-Task-{job_id}: 작업 중 에러 발생: {e}", exc_info=True)
-        jobs[job_id] = {"status": "failed", "error": str(e)}
+        logger.error(f"=== 🤍Direct-Agent: 작업 중 에러 발생: {e}", exc_info=True)
+        return {"error": str(e), "status": "failed"}
 
 
 
-# 즉시 job_id를 반환.
+# 쿼리 기반 처리: 메모리 저장 없이 즉시 응답
 @app.post("/chat")
 async def chat_with_agent(
-    background_tasks: BackgroundTasks,
     message: Optional[str] = Form(None),
     image: Optional[UploadFile] = File(None),
 ):
     """
-    사용자 요청(텍스트 및/또는 이미지)을 받아 작업을 백그라운드에 등록하고 즉시 작업 ID를 반환합니다.
+    사용자 요청(텍스트 및/또는 이미지)을 받아 즉시 처리하고 결과를 반환합니다.
+    메모리에 상태를 저장하지 않고 쿼리 기반으로만 처리합니다.
     """
     try:
         logger.info(f"=== 🤍intent_service에서 /chat 엔드포인트 호출됨🤍 ===")
@@ -248,9 +247,32 @@ async def chat_with_agent(
             input_data["image_filename"] = image.filename
             input_data["image_content_type"] = image.content_type
 
-        job_id = str(uuid.uuid4()) # 고유한 작업 ID 생성
-        background_tasks.add_task(run_agent_and_store_result, job_id, input_data)
-        return JSONResponse(status_code=202, content={"job_id": job_id})    # ★★ 최종 결과(dict)를 JSON으로 바꿔서 클라이언트로 전송
+        # 직접 처리하고 결과를 임시 저장 (백엔드 호환성)
+        result = await run_agent_direct(input_data)
+        
+        # 디버깅을 위한 로깅
+        logger.info(f"=== 🤍Agent 처리 결과: {result}")
+        logger.info(f"=== 🤍결과 타입: {type(result)}")
+        
+        # 백엔드 호환성을 위한 응답 형식 조정
+        if isinstance(result, dict) and "error" in result:
+            # 에러 응답
+            logger.error(f"=== ❌ 에러 응답 반환: {result}")
+            return JSONResponse(status_code=500, content=result)
+        else:
+            # job_id 생성 및 결과 임시 저장
+            job_id = "direct_response_" + str(uuid.uuid4())
+            temp_results[job_id] = {
+                "status": "completed",
+                "result": result
+            }
+            
+            # 백엔드가 기대하는 202 + job_id 형식으로 응답
+            formatted_result = {
+                "job_id": job_id
+            }
+            logger.info(f"=== ✅ 백엔드 호환 응답 반환: {formatted_result}")
+            return JSONResponse(status_code=202, content=formatted_result)
         
     except HTTPException as http_exc:
         logger.error(f"HTTP 예외 발생 (클라이언트로 전달됨): {http_exc.status_code} - {http_exc.detail}")
@@ -260,17 +282,28 @@ async def chat_with_agent(
         raise HTTPException(status_code=500, detail=f"서버 내부에서 예상치 못한 오류가 발생했습니다: {e}")
 
 
-# 작업 상태를 알려줌.
+# 백엔드 호환성을 위한 상태 조회 엔드포인트
 @app.get("/status/{job_id}")
 async def get_status(job_id: str):
     """
-    주어진 작업 ID의 상태와 결과를 반환합니다.
+    백엔드 호환성을 위한 상태 조회 엔드포인트
+    임시 저장된 결과를 반환
     """
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    logger.info(f"=== 🤍상태 조회 요청: {job_id}")
     
-    return JSONResponse(content=job)
+    # 임시 저장된 결과 확인
+    if job_id in temp_results:
+        result = temp_results[job_id]
+        logger.info(f"=== ✅ 저장된 결과 반환: {result}")
+        
+        # 결과 반환 후 임시 저장소에서 제거 (메모리 절약)
+        del temp_results[job_id]
+        
+        return JSONResponse(content=result)
+    else:
+        # 알 수 없는 job_id
+        logger.warning(f"=== ❌ 알 수 없는 job_id: {job_id}")
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
 
 
 @app.get("/health")

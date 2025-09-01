@@ -488,10 +488,14 @@ async def generate_final_answer(state):
             else:
                 # 완전한 레시피 데이터: chatType을 "recipe"로 설정
                 # 요리 제목 추출
-                food_name = recipe_data.get("food_name") or recipe_data.get("title") or "요리"
+                food_name = recipe_data.get("food_name") or recipe_data.get("title")
                 
-                # 답변 메시지 생성
-                answer_message = f"네, 요청하신 {food_name}의 레시피를 알려드릴게요."
+                # 답변 메시지 생성 - food_name이 있을 때만 레시피 메시지 사용
+                if food_name:
+                    answer_message = f"네, 요청하신 {food_name}의 레시피를 알려드릴게요."
+                else:
+                    # food_name이 없으면 원본 답변 그대로 사용
+                    answer_message = recipe_data.get("answer", "")
                 
                 final_response = {
                     "chatType": "recipe",
