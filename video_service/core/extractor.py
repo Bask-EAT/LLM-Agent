@@ -5,10 +5,7 @@ from typing import TypedDict, List
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
-<<<<<<< HEAD
-=======
-from langchain_core.messages import HumanMessage
->>>>>>> llm-update
+from langchain_core.messages import HumanMessagee
 from langchain_core.tools import tool
 import logging
 from config import GEMINI_API_KEY
@@ -40,8 +37,6 @@ class GraphState(TypedDict):
     error: str
     final_answer: str
 
-<<<<<<< HEAD
-=======
 # 내부 처리 함수 추가
 async def extract_recipe_from_youtube_internal(youtube_url: str) -> dict:
     """유튜브 영상에서 레시피를 추출하는 내부 처리 함수"""
@@ -162,7 +157,6 @@ async def extract_recipe_from_youtube_internal(youtube_url: str) -> dict:
             "ingredients": [],
             "recipe": []
         }
->>>>>>> llm-update
 
 # 재료 문자열을 정규화하는 함수
 def normalize_ingredient_string(raw: str):
