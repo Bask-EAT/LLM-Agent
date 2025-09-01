@@ -228,9 +228,12 @@ async def chat_with_agent(
         # 유튜브 URL 검사를 위해 메시지가 있으면 사용
         latest_message = message or ""
 
-        # 유튜브 링크 개수 검사 로직
-        if count_youtube_urls(latest_message) > 1:
-            logger.warning(f"요청 거부: 메시지에 유튜브 링크가 2개 이상 포함됨 - {latest_message}")
+        # 유튜브 링크 개수 검사 로직 (실시간 입력만 체크)
+        lines = latest_message.split('\n')
+        real_time_message = lines[-1] if lines else ""
+        
+        if count_youtube_urls(real_time_message) > 1:
+            logger.warning(f"요청 거부: 실시간 입력에 유튜브 링크가 2개 이상 포함됨 - {real_time_message}")
             raise HTTPException(
                 status_code=400,
                 detail="죄송합니다, 한 번에 하나의 유튜브 링크만 분석할 수 있습니다."

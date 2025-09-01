@@ -22,3 +22,6 @@ youtube-transcript-api==1.2.1
 
 # 기타 유틸리티
 typing-extensions>=4.8.0
+faster_whisper
+python-multipart
+

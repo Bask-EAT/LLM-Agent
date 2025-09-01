@@ -298,7 +298,11 @@ class TextAgent:
                     self._add_assistant_response(response_text)
                     self.last_suggested_dishes = [str(v).strip() for v in varieties if isinstance(v, str) and v.strip()]
                     self.last_suggested_ts = time.time()
+<<<<<<< HEAD
                     return {"answer": response_text, "food_name": dish, "ingredients": [], "recipe": []}
+=======
+                    return {"answer": response_text, "food_name": None, "ingredients": [], "recipe": []}
+>>>>>>> llm-update
                 else:
                     title = result.get("title", dish)
                     ingredients = result.get("ingredients", [])

@@ -5,6 +5,10 @@ from typing import TypedDict, List
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
+<<<<<<< HEAD
+=======
+from langchain_core.messages import HumanMessage
+>>>>>>> llm-update
 from langchain_core.tools import tool
 import logging
 from config import GEMINI_API_KEY
@@ -36,6 +40,129 @@ class GraphState(TypedDict):
     error: str
     final_answer: str
 
+<<<<<<< HEAD
+=======
+# 내부 처리 함수 추가
+async def extract_recipe_from_youtube_internal(youtube_url: str) -> dict:
+    """유튜브 영상에서 레시피를 추출하는 내부 처리 함수"""
+    try:
+        logger.info(f"내부 유튜브 처리 시작: {youtube_url}")
+        
+        # 1. 유튜브 정보 추출
+        try:
+            video_title = get_youtube_title(youtube_url)
+        except Exception as e:
+            raise e
+            
+        try:
+            transcript = get_youtube_transcript(youtube_url)
+        except Exception as e:
+            raise e
+            
+        try:
+            duration = get_youtube_duration(youtube_url)
+        except Exception as e:
+            raise e
+        
+        if not transcript:
+            return {
+                "error": "자막을 추출할 수 없습니다.",
+                "message": "이 영상에는 자막이 없거나 접근할 수 없습니다."
+            }
+        
+        # 2. LLM을 사용한 레시피 추출
+        try:
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-2.5-flash",
+                temperature=0,
+                google_api_key=GEMINI_API_KEY
+            )
+        except Exception as e:
+            raise e
+        
+        try:
+            prompt = f"""
+            다음 유튜브 영상의 자막을 분석하여 레시피를 추출해주세요.
+            
+            영상 제목: {video_title}
+            영상 길이: {duration}초
+            
+            자막 내용:
+            {transcript}
+            
+            다음 JSON 형식으로 응답해주세요:
+            {{
+                "food_name": "요리 이름",
+                "ingredients": [
+                    {{"item": "재료명", "amount": "양", "unit": "단위"}},
+                    ...
+                ],
+                "recipe": [
+                    "1단계 조리법",
+                    "2단계 조리법",
+                    ...
+                ]
+            }}
+            
+            레시피 정보가 명확하지 않은 경우 빈 배열을 반환하세요.
+            """
+        except Exception as e:
+            raise e
+        
+        try:
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            content = response.content
+        except Exception as e:
+            raise e
+        
+        # JSON 파싱
+        try:
+            # 마크다운 블록에서 JSON 추출
+            import re
+            match = re.search(r'```json\s*(\{.*?\})\s*```', content, re.DOTALL)
+            if match:
+                logger.info("✅ [DEBUG] 마크다운 블록에서 JSON 추출 성공!")
+                recipe_data = json.loads(match.group(1))
+                logger.info(f"✅ [DEBUG] 파싱된 데이터: {recipe_data}")
+            else:
+                logger.info("🔍 [DEBUG] 마크다운 블록 없음, 직접 JSON 파싱 시도...")
+                # 직접 JSON 파싱 시도
+                recipe_data = json.loads(content)
+                logger.info(f"✅ [DEBUG] 직접 JSON 파싱 성공: {recipe_data}")
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ [DEBUG] JSON 파싱 실패: {e}")
+            logger.error(f"❌ [DEBUG] 파싱 시도한 내용: {content[:500]}...")
+            # JSON 파싱 실패 시 기본 구조 반환
+            recipe_data = {
+                "food_name": video_title,
+                "ingredients": [],
+                "recipe": []
+            }
+            logger.info("⚠️ [DEBUG] 기본 구조로 대체")
+        
+        result = {
+            "source": "video",
+            "food_name": recipe_data.get("food_name", video_title),
+            "ingredients": recipe_data.get("ingredients", []),
+            "recipe": recipe_data.get("recipe", []),
+            "video_info": {
+                "title": video_title,
+                "duration": duration,
+                "url": youtube_url
+            }
+        }
+        
+        return result
+        
+    except Exception as e:
+        return {
+            "error": f"유튜브 처리 중 오류가 발생했습니다: {str(e)}",
+            "source": "video",
+            "food_name": "",
+            "ingredients": [],
+            "recipe": []
+        }
+>>>>>>> llm-update
 
 # 재료 문자열을 정규화하는 함수
 def normalize_ingredient_string(raw: str):
