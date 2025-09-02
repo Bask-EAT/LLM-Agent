@@ -447,7 +447,18 @@ async def generate_final_answer(state):
 
     try:
         # tool_output이 이미 완성된 레시피 데이터인 경우 바로 사용
-        tool_output = state["tool_output"]
+        tool_output = state.get("tool_output") or ""
+
+        # 툴 호출이 전혀 없었던 경우(비요리 대화 등) 기본 OTHER 응답 반환
+        if not tool_output:
+            from langchain_core.messages import AIMessage
+            default_json = {
+                "chatType": "chat",
+                "answer": "무엇을 도와드릴까요? 요리/레시피 관련 요청을 말씀해 주세요.",
+                "recipes": []
+            }
+            import json as _json
+            return {"messages": state["messages"] + [AIMessage(content=f"```json\n{_json.dumps(default_json, ensure_ascii=False)}\n```")]} 
         
         if isinstance(tool_output, str):
             # JSON 문자열인 경우 파싱
@@ -555,7 +566,7 @@ workflow.add_conditional_edges(
     should_call_tool,
     {
         "action": "image_injector",
-        END: END,
+        END: "formatter",
     },
 )
 
@@ -630,9 +641,7 @@ async def run_agent(input_data: dict):
         )
 
         if not output_string:
-            return json.loads(
-                '{"chatType": "error", "answer": "죄송합니다, 답변을 생성하는 데 실패했습니다. 응답이 비어있습니다."}'
-            )
+            return {"chatType": "chat", "answer": "무엇을 도와드릴까요?", "recipes": []}
 
         # 최종 결과에서 ```json ... ``` 부분을 추출
         clean_json_string = ""
@@ -643,7 +652,10 @@ async def run_agent(input_data: dict):
         else:
             clean_json_string = output_string.strip()
 
-        parsed_data = json.loads(clean_json_string)
+        try:
+            parsed_data = json.loads(clean_json_string)
+        except Exception:
+            parsed_data = {"chatType": "chat", "answer": "무엇을 도와드릴까요?", "recipes": []}
 
         return parsed_data
 

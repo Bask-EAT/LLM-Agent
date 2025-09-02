@@ -76,7 +76,41 @@ class TextAgent:
             logger.info(f"🔍 [TextAgent] 분류된 의도: {intent}")
 
             if intent == "CATEGORY":
-                # 메시지에서 직접 스타일 정보 추출
+                # 0) "X 추천(해줘)" 형태면 X를 요리로 간주해 하위 종류/레시피를 우선 제시
+                try:
+                    import re
+                    m = re.search(r"([가-힣A-Za-z\s]{2,30})\s*추천(?:해줘|해|좀|해봐|해주세요)?", message or "")
+                    if m:
+                        candidate = re.sub(r"\s+", " ", m.group(1)).strip()
+                        lower_cand = candidate.lower()
+                        # 스타일 키워드에 해당하면 건너뜀(한식/프랑스식 등은 카테고리 추천으로 처리)
+                        is_style = any((k in lower_cand) or (k in candidate) for k in STYLE_KEYWORDS)
+                        if candidate and not is_style:
+                            # 추천 의도이므로 하위 종류를 우선 제시하도록 힌트
+                            result = self.recipes.handle_vague_dish(candidate, prefer_varieties=True)
+                            if result.get("type") == "vague_dish":
+                                varieties = result.get("varieties", [])
+                                response_text = f"어떤 {candidate} 레시피를 원하시나요?\n\n"
+                                for i, variety in enumerate(varieties, 1):
+                                    response_text += f"{i}. {variety}\n"
+                                response_text += f"\n다른 원하시는 {candidate} 종류가 있으시면 말씀해주세요!"
+                                return {"answer": response_text, "food_name": None, "ingredients": [], "recipe": []}
+                            else:
+                                title = result.get("title", candidate)
+                                ingredients = result.get("ingredients", [])
+                                steps = result.get("steps", [])
+                                response_text = "📋 [재료]\n"
+                                for i, ingredient in enumerate(ingredients, 1):
+                                    response_text += f"{i}. {ingredient}\n"
+                                response_text += "\n👨‍🍳 [조리법]\n"
+                                for i, step in enumerate(steps, 1):
+                                    response_text += f"{i}. {step}\n"
+                                simple_answer = f"네. {title}의 레시피를 알려드릴게요."
+                                return {"answer": simple_answer, "food_name": title, "ingredients": ingredients, "recipe": steps}
+                except Exception:
+                    pass
+
+                # 1) 메시지에서 직접 스타일 정보 추출
                 if self._is_style_followup(message):
                     # 스타일 후속 요청인 경우 메시지에서 재료 정보 추출
                     extracted_ingredients = self._extract_ingredients_from_message(message)
@@ -118,14 +152,25 @@ class TextAgent:
                 return {"answer": response_text, "food_name": None, "ingredients": [], "recipe": []}
 
             elif intent == "INGREDIENTS_TO_DISHES":
-                result = await self.recommend_dishes_by_ingredients(message)
+                # 스타일 키워드가 포함되면 스타일 기반 추천으로 분기
+                lower_msg = message.lower()
+                inferred = next((c for c in CUISINE_PROFILES if any(k in lower_msg or k in message for k in c["keywords"])), None)
+                if inferred is not None:
+                    extracted_ingredients = self._extract_ingredients_from_message(message)
+                    result = await self.recommend_dishes_by_ingredients_with_style(message, extracted_ingredients)
+                else:
+                    result = await self.recommend_dishes_by_ingredients(message)
                 response_text = result.get("answer", "재료로 만들 수 있는 요리를 찾을 수 없습니다.")
                 extracted_ingredients = result.get("extracted_ingredients", [])
                 return {"answer": response_text, "food_name": None, "ingredients": [], "recipe": []}
 
             elif intent == "RECIPE":
                 dish = self._extract_dish_smart(message)
-                result = self.recipes.handle_vague_dish(dish)
+                # 복합 요리명(형용사/재료 + 기본 요리명)은 구체 요리로 간주해 바로 레시피를 조회
+                if self._is_composite_dish(dish):
+                    result = self.recipes.get_recipe(dish)
+                else:
+                    result = self.recipes.handle_vague_dish(dish)
                 if result.get("type") == "vague_dish":
                     varieties = result.get("varieties", [])
                     response_text = f"어떤 {dish} 레시피를 원하시나요?\n\n"
@@ -223,9 +268,19 @@ class TextAgent:
 
     def _extract_dish_smart(self, message: str) -> str:
         """메시지에서 직접 요리명 추출 (메모리 상태에 의존하지 않음)"""
+        import re
+        # 1) 기존 패턴 시도(내부에서 괄호 제거/다단어 지원)
         dish = find_dish_by_pattern(message)
         if dish:
             return dish
+        # 2) 전처리: 괄호 제거 후 공백 접기 + 다단어 키워드 패턴 재시도
+        cleaned = re.sub(r"\([^)]*\)", "", message or "").strip()
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        m = re.search(r"([가-힣A-Za-z\s]{2,30})\s+(?:레시피|만드는\s*법|조리법|팁)", cleaned)
+        if m:
+            candidate = m.group(1).strip()
+            if 1 < len(candidate) < 30:
+                return candidate
         return "알 수 없는 요리"
     
     def _extract_ingredients_from_message(self, message: str) -> List[str]:
@@ -274,6 +329,21 @@ class TextAgent:
                     return raw_ing
         return ""
 
+    def _is_composite_dish(self, dish: str) -> bool:
+        """형용사/재료가 붙은 복합 요리명 판별. 예: 소고기 김밥, 치즈 김밥, 봉골레 파스타 등"""
+        text = (dish or "").strip()
+        if not text:
+            return False
+        # 공백이 없으면 대부분 단일 명사이므로 제외
+        if " " not in text:
+            return False
+        base_keywords = [
+            "김밥", "파스타", "라면", "국수", "우동", "리조또", "스튜", "카레", "샐러드", "피자",
+            "스테이크", "탕", "찌개", "국", "덮밥", "볶음밥", "볶음", "구이", "전", "전골",
+            "샌드위치", "수프", "죽", "오므라이스", "비빔밥", "볶음면"
+        ]
+        return any(k in text for k in base_keywords)
+
     def _extract_explicit_substitute_name(self, message: str) -> str:
         import re
         patterns = [
@@ -291,37 +361,28 @@ class TextAgent:
     async def recommend_dishes_by_ingredients(self, message: str) -> Dict:
         """재료 기반 요리 추천 (메모리 상태에 의존하지 않음)"""
         prompt = f"""
-        당신은 한식 전문가입니다. 사용자가 요청한 재료로 만들 수 있는 한식 요리를 추천해주세요.
+        당신은 세계 각국의 요리법과 재료에 해박하며, 재료의 유무에 따른 대체재료(특히 한국에서 쉽게 구할 수 있는)까지 파악하고 있는 AI 셰프입니다. 복잡한 과정은 간단하게, 모든 이들이 쉽게 따라 할 수 있도록 명확하고 실용적인 추천을 제공합니다.
 
         사용자 메시지: "{message}"
 
-        **중요한 규칙:**
-        1. 반드시 유효한 JSON 형식으로만 응답하세요
-        2. JSON 이외의 텍스트나 설명은 절대 포함하지 마세요
-        3. 코드 블록(```)이나 다른 마크다운 문법을 사용하지 마세요
-        4. 재료가 명확하지 않으면 빈 배열로 설정하세요
+        중요한 규칙:
+        1) 반드시 유효한 JSON 형식으로만 응답하세요
+        2) JSON 이외의 텍스트나 설명은 절대 포함하지 마세요
+        3) 코드 블록(\`\`\`)이나 다른 마크다운 문법을 사용하지 마세요
+        4) 재료가 명확하지 않으면 빈 배열로 설정하세요
 
-        **작업 순서:**
-        1. 메시지에서 언급된 재료를 추출하세요
-        2. 해당 재료를 주재료로 사용하는 한식 요리 3가지를 추천하세요
-        3. 각 요리 별로 간단한 소개를 하세요
+        작업 순서:
+        1) 메시지에서 언급된 재료를 추출하세요
+        2) 해당 재료를 주재료로 사용하는 요리 3가지를 추천하세요
+        3) 각 요리별로 간단한 소개를 작성하세요
 
-        **JSON 응답 형식 (이 형식을 정확히 따르세요):**
+        JSON 응답 형식(정확히 따르세요):
         {{
           "ingredients": ["재료1", "재료2"],
           "dishes": [
-            {{
-              "name": "요리명1",
-              "description": "한 줄 소개"
-            }},
-            {{
-              "name": "요리명2", 
-              "description": "한 줄 소개"
-            }},
-            {{
-              "name": "요리명3", 
-              "description": "한 줄 소개"
-            }}
+            {{"name": "요리명1", "description": "한 줄 소개"}},
+            {{"name": "요리명2", "description": "한 줄 소개"}},
+            {{"name": "요리명3", "description": "한 줄 소개"}}
           ]
         }}
         """
@@ -334,7 +395,7 @@ class TextAgent:
         if not dishes:
             return {"answer": "해당 재료로 만들 수 있는 요리를 찾을 수 없습니다.", "extracted_ingredients": ingredients, "food_name": None, "recipe": []}
         
-        response_text = f"다음 재료들로 만들 수 있는 한식 요리를 추천드려요:\n\n"
+        response_text = f"다음 재료들로 만들 수 있는 요리를 추천드려요:\n\n"
         response_text += "\n🍳 [추천 요리]\n"
         for i, dish in enumerate(dishes, 1):
             if isinstance(dish, dict):
@@ -372,7 +433,8 @@ class TextAgent:
         - JSON 이외의 텍스트나 설명은 절대 포함하지 마세요
         - 코드 블록이나 다른 마크다운 문법을 사용하지 마세요
         - 위 재료들을 반드시 주재료로 사용하는 {category_key} 요리만 추천하세요
-        - 모든 출력은 한국어로 작성하세요. 요리명은 한국어 표기를 우선 사용하고, 필요하면 괄호에 원어를 병기하세요.
+        - 모든 출력은 한국어로 작성하세요. 요리명은 한국어 표기를 우선 사용하세요
+        - 각 요리별로 간단한 소개를 작성하세요
 
         JSON 응답 형식(정확히 따르세요):
         {{
@@ -394,7 +456,9 @@ class TextAgent:
         if not dishes:
             return {"answer": f"해당 재료로 만들 수 있는 {category_key} 요리를 찾을 수 없습니다.", "extracted_ingredients": ingredients}
         
-        response_text = f"{style} 스타일 추천 요리:\n\n"
+        # 일반 추천과 동일한 출력 형식으로 통일
+        response_text = "다음 재료들로 만들 수 있는 요리를 추천드려요:\n\n"
+        response_text += "\n🍳 [추천 요리]\n"
         for i, dish in enumerate(dishes, 1):
             if isinstance(dish, dict):
                 name = (dish.get("name") or "").strip()
@@ -405,7 +469,7 @@ class TextAgent:
                 response_text += line + "\n"
             else:
                 response_text += f"{i}. {dish}\n"
-        response_text += "\n원하는 요리의 레시피를 알려드릴까요? 번호(예: 1번)나 요리명을 말씀해 주세요."
+        response_text += "\n원하는 요리의 레시피를 알고 싶으시면 번호나 요리명을 말씀해주세요!"
         
         return {"answer": response_text, "extracted_ingredients": ingredients, "style": style, "recommended_dishes": dishes}
 
