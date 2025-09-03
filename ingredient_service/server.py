@@ -10,9 +10,9 @@ import base64
 # --- 설정 (파일 상단에 위치) ---
 # 실제 벡터 DB API의 주소를 환경 변수에서 가져옵니다.
 # .env 파일에 VECTOR_DB_API_URL="http://실제_벡터DB_주소" 와 같이 설정해야 합니다.
-URL = os.getenv("VECTOR_DB_API_URL", "http://localhost:8000") # 예시: 기본값 설정
+URL = os.getenv("VECTOR_DB_API_URL", "http://localhost:8000")  # 예시: 기본값 설정
 
-DEFAULT_TOP_K = 10
+DEFAULT_TOP_K = 30
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -256,6 +256,7 @@ async def search_by_multimodal(request: Request):
             }
         ],
     }
+
 
 if __name__ == "__main__":
     # 다른 서비스와 겹치지 않는 새 포트(8004)를 사용합니다.

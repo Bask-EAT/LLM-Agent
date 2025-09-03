@@ -55,6 +55,7 @@ from ingredient_service.core import IngredientProcessor
 text_agent = TextAgent()
 ingredient_processor = IngredientProcessor()
 
+
 # 내부 처리 함수들 정의
 async def text_based_cooking_assistant_internal(query: str) -> str:
     """텍스트 기반 요리 어시스턴트 - 내부 처리"""
@@ -67,6 +68,7 @@ async def text_based_cooking_assistant_internal(query: str) -> str:
         logger.error(f"내부 텍스트 처리 오류: {e}")
         return json.dumps({"error": f"텍스트 처리 오류: {str(e)}"}, ensure_ascii=False)
 
+
 async def extract_recipe_from_youtube_internal_wrapper(youtube_url: str) -> str:
     """유튜브 레시피 추출 - 내부 처리"""
     try:
@@ -77,6 +79,7 @@ async def extract_recipe_from_youtube_internal_wrapper(youtube_url: str) -> str:
     except Exception as e:
         logger.error(f"내부 비디오 처리 오류: {e}")
         return json.dumps({"error": f"비디오 처리 오류: {str(e)}"}, ensure_ascii=False)
+
 
 async def search_ingredient_by_text_internal(query: str) -> str:
     """재료 텍스트 검색 - 내부 처리"""
@@ -89,6 +92,7 @@ async def search_ingredient_by_text_internal(query: str) -> str:
         logger.error(f"내부 재료 텍스트 검색 오류: {e}")
         return json.dumps({"error": f"재료 검색 오류: {str(e)}"}, ensure_ascii=False)
 
+
 async def search_ingredient_by_image_internal(image_b64: str) -> str:
     """재료 이미지 검색 - 내부 처리"""
     try:
@@ -100,35 +104,41 @@ async def search_ingredient_by_image_internal(image_b64: str) -> str:
         logger.error(f"내부 재료 이미지 검색 오류: {e}")
         return json.dumps({"error": f"이미지 검색 오류: {str(e)}"}, ensure_ascii=False)
 
+
 # 기존 인터페이스 유지를 위한 래퍼 함수들 (하위 호환성)
 from langchain_core.tools import tool
+
 
 @tool
 async def text_based_cooking_assistant(query: str) -> str:
     """텍스트 기반의 요리 관련 질문에 답변할 때 사용합니다."""
     return await text_based_cooking_assistant_internal(query)
 
+
 @tool
 async def extract_recipe_from_youtube(youtube_url: str) -> str:
     """유튜브 영상에서 레시피를 추출할 때 사용합니다."""
     return await extract_recipe_from_youtube_internal_wrapper(youtube_url)
+
 
 @tool
 async def search_ingredient_by_text(query: str) -> str:
     """사용자가 상품 정보를 찾거나, 장바구니에 상품을 담으려 할 때 사용합니다."""
     return await search_ingredient_by_text_internal(query)
 
+
 @tool
 async def search_ingredient_by_image(image_b64: str) -> str:
     """사용자가 '이미지'만으로 재료나 상품 구매 정보를 물어볼 때 사용합니다."""
     return await search_ingredient_by_image_internal(image_b64)
+
 
 # 1. 사용할 도구(Tools) 정의 - 내부 처리 함수들 사용
 tools = [
     text_based_cooking_assistant,
     extract_recipe_from_youtube,
     search_ingredient_by_text,  # 내부 처리로 변경됨
-    search_ingredient_by_image, # 내부 처리로 변경됨
+    search_ingredient_by_image,  # 내부 처리로 변경됨
 ]
 
 # 2. LLM 모델 설정
@@ -153,7 +163,9 @@ tool_calling_prompt = ChatPromptTemplate.from_messages(
      
     - 사용자의 메시지에 **"[사용자가 이미지를 첨부했습니다]"** 라는 텍스트가 포함되어 있다면, 다른 텍스트 내용과 상관없이 **반드시** `search_ingredient_by_image` 도구를 호출해야 합니다. 이때 `image_b64` 인자는 빈 문자열("")로 호출하세요. 시스템이 나중에 실제 데이터를 채워 넣을 것입니다.
     - 사용자의 메시지에 **YouTube URL**이 포함되어 있다면, `extract_recipe_from_youtube` 도구를 호출하세요.
-    - '상품 정보'나 '구매' 관련 텍스트 요청은 `search_ingredient_by_text` 도구를 호출하세요. query에는 상품 이름을 넣으세요
+    - '상품 정보', '구매', '가격', '최저가' 관련 텍스트 요청은 `search_ingredient_by_text` 도구를 호출하세요. query에는 정확한 상품 이름만 넣으세요
+    - 예시: "소고기 담아줘" → query: "소고기", "계란 가격 알려줘" → query: "계란", "김치 찾아줘" → query: "김치"
+    - 주의: "소고기 양념"이나 "소고기 스테이크"가 아닌 정확히 "소고기"만 검색하세요
 
     - 그 외의 모든 '요리 관련 대화'는 `text_based_cooking_assistant` 도구를 호출하세요.
 
@@ -191,9 +203,9 @@ json_generation_prompt = ChatPromptTemplate.from_messages(
 
     #### **1. `chatType` 결정:**
 
-    - `tool_output`에 상품 정보가 포함된 경우면 `chatType`은 "cart"입니다.
-    - `tool_output`에 **완전한 레시피 정보**(ingredients와 recipe가 모두 존재하고 비어있지 않음)가 포함된 경우면 `chatType`은 "recipe"입니다.
-    - **선택지 제공이나 사용자에게 답변을 요청하는 경우**(예: "어떤 볶음밥을 원하시나요?", "번호나 요리명을 말씀해주세요")는 `chatType`을 "chat"으로 설정하세요.
+    - 사용자에게 검색한 상품 정보를 돌려줘야 한다면(~ 담아줘, 찾아줘, ~ 가격 알려줘, ~ 최저가 얼마야?) 'cart' 로 설정하세요
+    - 사용자에게 레시피 정보를 돌려줘야 한다면(~ 레시피를 알려줘, ...) 'recipe'로 설정하세요.
+    - 사용자에게 답변을 요청하는 경우(예: "어떤 볶음밥을 원하시나요?", "번호나 요리명을 말씀해주세요")는 `chatType`을 "chat"으로 설정하세요.
     - 그 외의 경우(예: 사용자의 답변 요청, 불완전한 정보) `chatType`은 "chat"입니다.
 
 
@@ -231,8 +243,13 @@ json_generation_prompt = ChatPromptTemplate.from_messages(
       ```
 
     - **`chatType`이 "cart"일 경우:**
-      - `tool_output`의 `answer`를 참고하여 친절한 답변을 생성하세요.
+      - `tool_output`의 `answer`를 참고하여 친절한 답변을 생성하세요. 가격 정보가 포함된 경우 최저가나 가격 범위를 언급하세요.
       - **[핵심 규칙]** `tool_output`에서 각 상품마다 **`product_name`, `price`, `image_url`, `product_address`** 4개의 키만 정확히 추출하여 `ingredients` 리스트를 만드세요.
+      - **[중요한 필터링 규칙]**: 사용자가 요청한 정확한 상품만 포함하세요. 예를 들어:
+        * 사용자가 "소고기"를 요청했다면 "소고기 양념", "소고기 스테이크 소스" 등은 제외하고 순수한 "소고기" 상품만 포함
+        * 사용자가 "계란"을 요청했다면 "계란 요리", "계란 샐러드" 등은 제외하고 순수한 "계란" 상품만 포함
+        * 상품명에 사용자가 요청한 키워드가 정확히 포함되어야 하며, 관련 상품이나 조미료는 제외
+      - **최대 10개의 상품만** 포함하세요. 가장 관련성이 높고 정확한 상품을 우선적으로 선택하세요.
       - 최종 구조는 반드시 아래와 같아야 합니다.
       ```json
       {{
@@ -274,11 +291,13 @@ json_generation_prompt = ChatPromptTemplate.from_messages(
 llm_with_tools = llm.bind_tools(tools)
 agent_runnable = tool_calling_prompt | llm_with_tools
 
+
 # 에이전트가 작업하는 동안 유지하고 업데이트할 데이터 구조입니다.
 class AgentState(TypedDict):
     messages: Sequence[BaseMessage]
     image_b64: Optional[str]
     tool_output: Optional[str]
+
 
 # 2. LangGraph의 노드(Node)와 엣지(Edge) 정의
 # 1). 도구 선택 노드 - 채팅 히스토리 컨텍스트 지원
@@ -293,6 +312,7 @@ async def select_tool(state):
 
     except Exception as e:
         raise e
+
 
 # 2). 이미지 데이터 주입 노드
 def inject_image_data(state: AgentState) -> dict:
@@ -352,6 +372,7 @@ def inject_image_data(state: AgentState) -> dict:
     )
     return {}
 
+
 # 3). Tool 노드: 내부 처리 방식으로 변경
 async def custom_tool_node(state: AgentState, config: RunnableConfig):
     """
@@ -384,6 +405,7 @@ async def custom_tool_node(state: AgentState, config: RunnableConfig):
         return {"tool_output": call_responses[0]}
     return {"tool_output": call_responses}
 
+
 # 'JSON 생성' 역할을 수행하는 체인을 미리 구성합니다.
 final_prompt_for_formatter = ChatPromptTemplate.from_template(
     """
@@ -399,18 +421,25 @@ final_prompt_for_formatter = ChatPromptTemplate.from_template(
     ### JSON 생성 규칙:
 
     #### 1. `chatType` 결정:
-    - Tool Output에 상품 정보가 있다면 'cart' 로 설정하세요
-    - Tool Output에 **완전한 레시피 정보**(ingredients와 recipe가 모두 존재하고 비어있지 않음)가 있다면 'recipe'로 설정하세요.
-    - **선택지 제공이나 사용자에게 답변을 요청하는 경우**(예: "어떤 볶음밥을 원하시나요?", "번호나 요리명을 말씀해주세요")는 `chatType`을 "chat"으로 설정하세요.
+    - 사용자에게 검색한 상품 정보를 돌려줘야 한다면(~ 담아줘, 찾아줘, ~ 가격 알려줘, ~ 최저가 얼마야?) 'cart' 로 설정하세요
+    - 사용자에게 레시피 정보를 돌려줘야 한다면(~ 레시피를 알려줘, ...) 'recipe'로 설정하세요.
+    - 사용자에게 답변을 요청하는 경우(예: "어떤 볶음밥을 원하시나요?", "번호나 요리명을 말씀해주세요")는 `chatType`을 "chat"으로 설정하세요.
     - 그 외의 경우(예: 사용자의 답변 요청, 불완전한 정보) `chatType`은 "chat"입니다.
 
     #### 2. 최종 JSON 구조 (규칙은 이전과 동일):
     - `chatType`이 **"cart"**일 경우, 아래 규칙을 철저히 따르세요.
 
     - **[핵심 추출 규칙]**: Tool Output의 `results` 리스트에 있는 각 상품 객체에서 **`product_name`, `price`, `image_url`, `product_address`** 4개의 키와 값만 정확히 추출하세요. 다른 모든 필드(id, category, quantity, similarity_score 등)는 **반드시 제외**해야 합니다.
+    
+    - **[중요한 필터링 규칙]**: 사용자가 요청한 정확한 상품만 포함하세요. 예를 들어:
+      * 사용자가 "소고기"를 요청했다면 "소고기 양념", "소고기 스테이크 소스" 등은 제외하고 순수한 "소고기" 상품만 포함
+      * 사용자가 "계란"을 요청했다면 "계란 요리", "계란 샐러드" 등은 제외하고 순수한 "계란" 상품만 포함
+      * 상품명에 사용자가 요청한 키워드가 정확히 포함되어야 하며, 관련 상품이나 조미료는 제외
+    
     - 추출한 4개의 키로 구성된 객체들의 리스트를 만드세요.
+    - **최대 10개의 상품만** 포함하세요. 가장 관련성이 높고 정확한 상품을 우선적으로 선택하세요.
     - 이 리스트를 최종 JSON의 `recipes[0].product` 키의 값으로 사용하세요.
-    - `answer` 필드에는 "요청하신 상품을 찾았습니다."와 같은 간단한 안내 문구를 넣으세요.
+    - `answer` 필드에는 검색 결과를 바탕으로 한 친절한 답변을 생성하세요. 가격 정보가 포함된 경우 최저가나 가격 범위를 언급하세요.
     - `food_name` 필드에는 상품들의 공통 카테고리나 주요 특징을 반영한 의미있는 대제목을 생성하세요. 예를 들어, "감자", "토마토", "돼지고기" 등과 같이 상품의 성격을 잘 나타내는 제목을 만드세요.
 
     - 최종 결과는 반드시 아래의 JSON 구조와 일치해야 합니다.
@@ -446,6 +475,7 @@ final_prompt_for_formatter = ChatPromptTemplate.from_template(
 )
 formatter_chain = final_prompt_for_formatter | llm
 
+
 # 4). 최종 답변 생성 노드 (최적화됨)
 async def generate_final_answer(state):
     logger.info("--- [LangGraph] ✍️ Node (generate_final_answer) 실행 ---")
@@ -457,17 +487,27 @@ async def generate_final_answer(state):
         # 툴 호출이 전혀 없었던 경우(비요리 대화 등) 기본 OTHER 응답 반환
         if not tool_output:
             from langchain_core.messages import AIMessage
+
             default_json = {
                 "chatType": "chat",
                 "answer": "무엇을 도와드릴까요? 요리/레시피 관련 요청을 말씀해 주세요.",
-                "recipes": []
+                "recipes": [],
             }
             import json as _json
-            return {"messages": state["messages"] + [AIMessage(content=f"```json\n{_json.dumps(default_json, ensure_ascii=False)}\n```")]} 
-        
+
+            return {
+                "messages": state["messages"]
+                + [
+                    AIMessage(
+                        content=f"```json\n{_json.dumps(default_json, ensure_ascii=False)}\n```"
+                    )
+                ]
+            }
+
         if isinstance(tool_output, str):
             # JSON 문자열인 경우 파싱
             import json
+
             try:
                 parsed_output = json.loads(tool_output)
             except:
@@ -475,7 +515,9 @@ async def generate_final_answer(state):
                 final_response_msg = await formatter_chain.ainvoke(
                     {"tool_output": tool_output}
                 )
-                logger.info(f"--- [LangGraph] ✍️ 최종 응답 (기존 방식): {final_response_msg} ---")
+                logger.info(
+                    f"--- [LangGraph] ✍️ 최종 응답 (기존 방식): {final_response_msg} ---"
+                )
                 return {"messages": state["messages"] + [final_response_msg]}
         elif isinstance(tool_output, list):
             # 다건 응답: 각 항목을 개별 파싱 후 병합 준비
@@ -495,52 +537,68 @@ async def generate_final_answer(state):
         
         # 이미 완성된 단건 레시피 데이터를 바로 JSON으로 변환
         if isinstance(parsed_output, dict) and ("source" in parsed_output or "food_name" in parsed_output):
+
             # 레시피 데이터가 이미 완성된 경우
             # source가 없으면 추가
             recipe_data = parsed_output.copy()
             if "source" not in recipe_data:
                 recipe_data["source"] = "text"
-            
+
             # 선택지 제공 상황인지 확인 (ingredients와 recipe가 비어있고 answer에 선택지가 있는 경우)
             answer_text = recipe_data.get("answer", "")
-            has_ingredients = recipe_data.get("ingredients") and len(recipe_data.get("ingredients", [])) > 0
-            has_recipe = recipe_data.get("recipe") and len(recipe_data.get("recipe", [])) > 0
-            is_choice_providing = ("번호" in answer_text or "말씀해" in answer_text or "원하시나요" in answer_text) and not (has_ingredients and has_recipe)
-            
+            has_ingredients = (
+                recipe_data.get("ingredients")
+                and len(recipe_data.get("ingredients", [])) > 0
+            )
+            has_recipe = (
+                recipe_data.get("recipe") and len(recipe_data.get("recipe", [])) > 0
+            )
+            is_choice_providing = (
+                "번호" in answer_text
+                or "말씀해" in answer_text
+                or "원하시나요" in answer_text
+            ) and not (has_ingredients and has_recipe)
+
             if is_choice_providing:
                 # 선택지 제공 상황: chatType을 "chat"으로 설정
                 final_response = {
                     "chatType": "chat",
                     "answer": answer_text,
-                    "recipes": []
+                    "recipes": [],
                 }
             else:
                 # 완전한 레시피 데이터: chatType을 "recipe"로 설정
                 # 요리 제목 추출
                 food_name = recipe_data.get("food_name") or recipe_data.get("title")
-                
+
                 # 답변 메시지 생성 - food_name이 있을 때만 레시피 메시지 사용
                 if food_name:
-                    answer_message = f"네, 요청하신 {food_name}의 레시피를 알려드릴게요."
+                    answer_message = (
+                        f"네, 요청하신 {food_name}의 레시피를 알려드릴게요."
+                    )
                 else:
                     # food_name이 없으면 원본 답변 그대로 사용
                     answer_message = recipe_data.get("answer", "")
-                
+
                 final_response = {
                     "chatType": "recipe",
                     "answer": answer_message,
-                    "recipes": [recipe_data]
+                    "recipes": [recipe_data],
                 }
-            
+
             # JSON 문자열로 변환
             import json
+
             final_json = json.dumps(final_response, ensure_ascii=False, indent=2)
-            
+
             # AIMessage 생성
             from langchain_core.messages import AIMessage
+
             final_response_msg = AIMessage(content=f"```json\n{final_json}\n```")
-            
-            logger.info(f"--- [LangGraph] ✍️ 최종 응답 (최적화 방식): {final_response_msg} ---")
+
+            logger.info(
+                f"--- [LangGraph] ✍️ 최종 응답 (최적화 방식): {final_response_msg} ---"
+            )
             return {"messages": state["messages"] + [final_response_msg]}
         
         # 다건 병합 로직: 리스트 내 각 결과를 recipe/cart/chat 형태로 표준화 후 합치기
@@ -652,12 +710,12 @@ async def generate_final_answer(state):
             return {"messages": state["messages"] + [final_response_msg]}
 
         # 기존 방식 (fallback)
-        final_response_msg = await formatter_chain.ainvoke(
-            {"tool_output": tool_output}
+        final_response_msg = await formatter_chain.ainvoke({"tool_output": tool_output})
+        logger.info(
+            f"--- [LangGraph] ✍️ 최종 응답 (기존 방식): {final_response_msg} ---"
         )
-        logger.info(f"--- [LangGraph] ✍️ 최종 응답 (기존 방식): {final_response_msg} ---")
         return {"messages": state["messages"] + [final_response_msg]}
-        
+
     except Exception as e:
         logger.error(f"--- [LangGraph] ✍️ 최종 응답 생성 중 오류: {e} ---")
         # 오류 발생시 기존 방식 사용
@@ -672,6 +730,7 @@ def should_call_tool(state):
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "action"
     return END
+
 
 # 4. 그래프(Graph) 생성 및 연결
 workflow = StateGraph(AgentState)
@@ -703,6 +762,8 @@ workflow.add_edge("formatter", END)
 
 # 5️⃣ 그래프를 컴파일합니다.
 app = workflow.compile()
+
+
 async def run_agent(input_data: dict):
     """
     사용자 입력을 받아 에이전트를 실행하고 결과를 반환합니다.
@@ -771,7 +832,11 @@ async def run_agent(input_data: dict):
         try:
             parsed_data = json.loads(clean_json_string)
         except Exception:
-            parsed_data = {"chatType": "chat", "answer": "무엇을 도와드릴까요?", "recipes": []}
+            parsed_data = {
+                "chatType": "chat",
+                "answer": "무엇을 도와드릴까요?",
+                "recipes": [],
+            }
 
         return parsed_data
 
