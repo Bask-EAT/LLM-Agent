@@ -161,6 +161,9 @@ tool_calling_prompt = ChatPromptTemplate.from_messages(
     ### **2단계: 도구 호출 규칙**
 
     - 사용자가 **여러 요리 레시피**를 한 번에 요청했다면(예: "김치찌개랑 된장찌개 레시피"), 반드시 `text_based_cooking_assistant` 도구를 **요리별로 각각** 호출해야 합니다.
+    - 사용자의 메시지에 **YouTube URL과 요리 관련 텍스트가 함께 포함**되어 있다면, `extract_recipe_from_youtube`와 `text_based_cooking_assistant`를 **모두** 호출하세요. 각 호출은 별도의 tool_call로 생성합니다.
+    - 텍스트에 **여러 요리명이 함께 포함**된 경우에는, **가장 명확하거나 최근에 언급된 순으로 최대 2개까지만** 선택하여 `text_based_cooking_assistant`를 각각 호출하세요. 3개 이상이면 **상위 2개만** 선택하세요.
+    - 위 규칙으로 생성하는 각 `text_based_cooking_assistant` 호출의 `query`는 **요리명만 간결하게 포함**한 문장으로 하세요. 예: "김치찌개 레시피 알려줘"
     """,
         ),
         MessagesPlaceholder(variable_name="messages"),
@@ -365,19 +368,21 @@ async def custom_tool_node(state: AgentState, config: RunnableConfig):
         "search_ingredient_by_image": search_ingredient_by_image_internal,
     }
 
-    # 각 tool_call을 비동기적으로 실행
-    call_responses = []
+    # 각 tool_call을 비동기적으로 실행하고 모두 취합
+    call_tasks = []
     for call in tool_calls:
         tool_func = tool_map.get(call["name"])
         if tool_func:
-            response = await tool_func(**call["args"])
-            call_responses.append(response)
+            call_tasks.append(tool_func(**call["args"]))
         else:
-            call_responses.append(f"Error: Tool '{call['name']}' not found.")
+            call_tasks.append(asyncio.sleep(0, result=f"Error: Tool '{call['name']}' not found."))
 
-    tool_output_str = call_responses[0] if call_responses else ""
+    call_responses = await asyncio.gather(*call_tasks)
 
-    return {"tool_output": tool_output_str}
+    # 단일 응답이면 문자열 그대로, 다건이면 리스트로 반환
+    if len(call_responses) == 1:
+        return {"tool_output": call_responses[0]}
+    return {"tool_output": call_responses}
 
 # 'JSON 생성' 역할을 수행하는 체인을 미리 구성합니다.
 final_prompt_for_formatter = ChatPromptTemplate.from_template(
@@ -472,10 +477,23 @@ async def generate_final_answer(state):
                 )
                 logger.info(f"--- [LangGraph] ✍️ 최종 응답 (기존 방식): {final_response_msg} ---")
                 return {"messages": state["messages"] + [final_response_msg]}
+        elif isinstance(tool_output, list):
+            # 다건 응답: 각 항목을 개별 파싱 후 병합 준비
+            import json
+            parsed_list = []
+            for item in tool_output:
+                if isinstance(item, str):
+                    try:
+                        parsed_list.append(json.loads(item))
+                    except Exception:
+                        parsed_list.append(item)
+                else:
+                    parsed_list.append(item)
+            parsed_output = parsed_list
         else:
             parsed_output = tool_output
         
-        # 이미 완성된 레시피 데이터를 바로 JSON으로 변환
+        # 이미 완성된 단건 레시피 데이터를 바로 JSON으로 변환
         if isinstance(parsed_output, dict) and ("source" in parsed_output or "food_name" in parsed_output):
             # 레시피 데이터가 이미 완성된 경우
             # source가 없으면 추가
@@ -525,6 +543,114 @@ async def generate_final_answer(state):
             logger.info(f"--- [LangGraph] ✍️ 최종 응답 (최적화 방식): {final_response_msg} ---")
             return {"messages": state["messages"] + [final_response_msg]}
         
+        # 다건 병합 로직: 리스트 내 각 결과를 recipe/cart/chat 형태로 표준화 후 합치기
+        if isinstance(parsed_output, list) and len(parsed_output) > 0:
+            standardized_recipes = []
+            chat_messages = []
+            # 각 항목 표준화
+            for entry in parsed_output:
+                try:
+                    if isinstance(entry, str):
+                        # 이미 포매팅된 일반 문자열이면 스킵
+                        continue
+                    if isinstance(entry, dict):
+                        # 비디오/텍스트 레시피 형태 표준화
+                        source = entry.get("source") or ("video" if entry.get("video_info") else "text")
+                        food_name = entry.get("food_name") or entry.get("title") or ""
+                        ingredients = entry.get("ingredients") or entry.get("ingredients_raw") or []
+                        steps = entry.get("recipe") or entry.get("steps") or []
+                        # cart 결과(data.results)인 경우 product로 변환은 포매터에 맡기고 여기서는 recipe 빈 배열 유지
+                        if "data" in entry and isinstance(entry.get("data"), dict) and "results" in entry["data"]:
+                            # 장바구니 타입 후보: 후속 포매터로 전달하기 위해 그대로 append
+                            standardized_recipes.append({
+                                "source": "ingredient_search",
+                                "food_name": entry.get("data", {}).get("query", "상품"),
+                                "product": entry.get("data", {}).get("results", []),
+                                "recipe": []
+                            })
+                        elif food_name or steps or ingredients:
+                            standardized_recipes.append({
+                                "source": source,
+                                "food_name": food_name,
+                                "ingredients": ingredients,
+                                "recipe": steps
+                            })
+                        elif entry.get("answer"):
+                            chat_messages.append(entry.get("answer"))
+                except Exception:
+                    continue
+
+            # 우선순위: 레시피/카트가 하나라도 있으면 recipes 배열로 반환, 없으면 chat
+            if standardized_recipes:
+                # 요청 요리명 기반으로 안내 문구 생성
+                recipe_names = []
+                for r in standardized_recipes:
+                    try:
+                        name = (r.get("food_name") or "").strip()
+                        has_recipe = isinstance(r.get("recipe"), list) and len(r.get("recipe") or []) > 0
+                        has_ingredients = isinstance(r.get("ingredients"), list) and len(r.get("ingredients") or []) > 0
+                        # cart 전용 항목(product만 있는 경우)은 제외하고, 레시피/재료가 있는 항목 위주로 이름 수집
+                        if name and (has_recipe or has_ingredients):
+                            recipe_names.append(name)
+                    except Exception:
+                        continue
+
+                if len(recipe_names) == 1:
+                    answer_message = f"요청하신 {recipe_names[0]}의 레시피를 알려드릴게요!"
+                elif len(recipe_names) > 1:
+                    joined = ", ".join(recipe_names)
+                    answer_message = f"요청하신 {joined} 레시피를 알려드릴게요!"
+                else:
+                    answer_message = "요청하신 내용을 모두 정리해 드렸어요!"
+
+                # 추가 권유: 원문에서 추출된 요리명 중 아직 처리되지 않은 것이 있으면 안내 문구 추가
+                try:
+                    from langchain_core.messages import HumanMessage as _HM
+                    original_text = ""
+                    for m in state.get("messages", []):
+                        if isinstance(m, _HM):
+                            original_text = str(m.content or "")
+                            break
+                    if original_text:
+                        import re as _re
+                        text_wo_urls = _re.sub(r"https?://\S+", " ", original_text)
+                        # 구분자 통일: 와/과/랑/및/그리고/,+/ 등
+                        normalized = _re.sub(r"\s*(와|과|랑|및|그리고|,|/|\+)\s*", ",", text_wo_urls)
+                        # 잡어 제거
+                        normalized = _re.sub(r"(레시피|조리법|만드는\s*법|알려줘|주세요|좀)", "", normalized)
+                        parts = [p.strip() for p in normalized.split(",") if p.strip()]
+                        # 남은 후보 계산 (대소문자 무시 비교)
+                        lower_done = {n.lower() for n in recipe_names}
+                        leftovers = [p for p in parts if p and p.lower() not in lower_done]
+                        # 유튜브 링크만 남은 경우 제거 (안전차)
+                        leftovers = [p for p in leftovers if not _re.search(r"youtube\.com|youtu\.be", p, _re.I)]
+                        if len(leftovers) == 1:
+                            answer_message += f" ‘{leftovers[0]}’ 레시피도 계속 보여드릴까요?"
+                        elif len(leftovers) >= 2:
+                            suggest = ", ".join(leftovers[:2])
+                            answer_message += f" ‘{suggest}’ 중 어떤 걸 더 볼까요?"
+                except Exception:
+                    pass
+
+                final_response = {
+                    "chatType": "recipe",  # 혼합 시 기본은 recipe로 표기, cart 항목은 product 포함
+                    "answer": answer_message,
+                    "recipes": standardized_recipes
+                }
+            else:
+                final_response = {
+                    "chatType": "chat",
+                    "answer": chat_messages[0] if chat_messages else "무엇을 도와드릴까요?",
+                    "recipes": []
+                }
+
+            import json
+            final_json = json.dumps(final_response, ensure_ascii=False, indent=2)
+            from langchain_core.messages import AIMessage
+            final_response_msg = AIMessage(content=f"```json\n{final_json}\n```")
+            logger.info(f"--- [LangGraph] ✍️ 최종 응답 (다건 병합): {final_response_msg} ---")
+            return {"messages": state["messages"] + [final_response_msg]}
+
         # 기존 방식 (fallback)
         final_response_msg = await formatter_chain.ainvoke(
             {"tool_output": tool_output}
@@ -602,25 +728,15 @@ async def run_agent(input_data: dict):
             }
 
         else:
-            # 가장 최근 메시지만 분석하여 유튜브 링크 확인
-            lines = user_message.split('\n')
-            latest_message = lines[-1] if lines else ""
-            
-            # 가장 최근 메시지에서만 유튜브 링크 검색 (실시간 입력 체크)
-            youtube_links_in_latest = re.findall(r'https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+', latest_message)
-            
-            # 가장 최근 메시지에 유튜브 링크가 있으면 해당 메시지만 사용
-            if len(youtube_links_in_latest) == 1:
-                user_message = latest_message
-            else:
-                # 대화 히스토리에서 유튜브 링크가 있는 경우: 최신 링크만 사용
-                all_youtube_links = re.findall(r'https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+', user_message)
-                if len(all_youtube_links) >= 1:
-                    latest_youtube_link = all_youtube_links[-1]
-                    
-                    # 최신 유튜브 링크만 포함된 메시지로 변경
-                    user_message = latest_youtube_link
-            
+            # 텍스트와 유튜브 링크를 동시에 허용: 링크는 보존, 텍스트도 그대로 전달
+            # 단, 유튜브 링크가 여러 개면 마지막 링크 1개만 유지
+            all_youtube_links = re.findall(r'https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+', user_message)
+            if len(all_youtube_links) > 1:
+                latest_youtube_link = all_youtube_links[-1]
+                # 최신 링크만 남기되, 원문 텍스트는 유지
+                user_message = re.sub(r'https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+', '', user_message)
+                user_message = user_message.strip() + f"\n{latest_youtube_link}"
+
             messages = [
                 HumanMessage(content=user_message or "")
             ]
