@@ -671,22 +671,31 @@ async def generate_final_answer(state):
                             break
                     if original_text:
                         import re as _re
-                        text_wo_urls = _re.sub(r"https?://\S+", " ", original_text)
-                        # 구분자 통일: 와/과/랑/및/그리고/,+/ 등
-                        normalized = _re.sub(r"\s*(와|과|랑|및|그리고|,|/|\+)\s*", ",", text_wo_urls)
-                        # 잡어 제거
-                        normalized = _re.sub(r"(레시피|조리법|만드는\s*법|알려줘|주세요|좀)", "", normalized)
-                        parts = [p.strip() for p in normalized.split(",") if p.strip()]
-                        # 남은 후보 계산 (대소문자 무시 비교)
-                        lower_done = {n.lower() for n in recipe_names}
-                        leftovers = [p for p in parts if p and p.lower() not in lower_done]
-                        # 유튜브 링크만 남은 경우 제거 (안전차)
-                        leftovers = [p for p in leftovers if not _re.search(r"youtube\.com|youtu\.be", p, _re.I)]
-                        if len(leftovers) == 1:
-                            answer_message += f" ‘{leftovers[0]}’ 레시피도 계속 보여드릴까요?"
-                        elif len(leftovers) >= 2:
-                            suggest = ", ".join(leftovers[:2])
-                            answer_message += f" ‘{suggest}’ 중 어떤 걸 더 볼까요?"
+
+                        def _extract_candidate_dishes(text: str):
+                            t = _re.sub(r"https?://\S+", " ", text)
+                            # 사용자/프리픽스 제거
+                            t = _re.sub(r"(?i)\b(user|사용자)\s*[:：]", " ", t)
+                            t = _re.sub(r"\[사용자가 이미지를 첨부했습니다\]", " ", t)
+                            # 의미 없는 토큰 제거
+                            t = _re.sub(r"(레시피|조리법|만드는\s*법|알려줘|주세요|좀|영상|동영상|유튜브|링크)", " ", t)
+                            # 구분자 통일
+                            t = _re.sub(r"\s*(와|과|랑|및|그리고|,|/|\+)\s*", ",", t)
+                            parts = [p.strip(" '‘’\"\t\n\r") for p in t.split(",") if p.strip()]
+                            # 필터: 지나치게 짧거나 길거나, 영상/링크/이미지 단어 포함 항목 제외
+                            parts = [p for p in parts if 2 <= len(p) <= 25 and not _re.search(r"(영상|링크|이미지)", p)]
+                            return parts
+
+                        candidates = _extract_candidate_dishes(original_text)
+                        # 2개 이하 요청이면 권유 문구 생략, 3개 이상일 때만 권유
+                        if len(candidates) >= 3:
+                            lower_done = {n.lower() for n in recipe_names}
+                            leftovers = [p for p in candidates if p and p.lower() not in lower_done]
+                            if len(leftovers) == 1:
+                                answer_message += f" ‘{leftovers[0]}’ 레시피도 계속 보여드릴까요?"
+                            elif len(leftovers) >= 2:
+                                suggest = ", ".join(leftovers[:2])
+                                answer_message += f" ‘{suggest}’ 중 어떤 걸 더 볼까요?"
                 except Exception:
                     pass
 
