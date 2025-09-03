@@ -23,8 +23,7 @@ class IntentClassifier:
 
     def classify(self, message: str, context: str) -> Intent:
         prompt = f"""
-        당신은 세계적으로 유명한 프로 셰프이자 요리 전문가입니다.
-        Pierre Koffmann(프랑스), Gordon Ramsay(미국식), Ken Hom(중식), Massimo Bottura(이탈리아), José Andrés(스페인식), Yotam Ottolenghi(지중해식), 강레오(한식), 안성재(한식) 셰프의 경험과 스타일을 모두 갖춘 요리 컨설턴트입니다.
+        당신은 세계 각국의 요리법과 재료에 해박하며, 재료의 유무에 따른 대체재료(특히 한국에서 쉽게 구할 수 있는)까지 파악하고 있는 AI 셰프입니다. 복잡한 과정은 간단하게, 모든 이들이 쉽게 따라 할 수 있도록 명확하고 실용적인 추천을 제공합니다.
 
         대화 컨텍스트:
         {context}

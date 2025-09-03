@@ -16,25 +16,63 @@ class Recipes:
     def __init__(self, llm: LLMClient) -> None:
         self.llm = llm
 
-    def is_vague_dish(self, dish: str) -> bool:
-        vague_dishes = [
-            "파스타", "볶음밥", "커리", "샐러드", "스테이크", "피자",
-            "라면", "국수", "밥", "면", "탕", "찌개", "볶음", "구이",
-        ]
-        return dish in vague_dishes
-
-    def handle_vague_dish(self, dish: str) -> Dict:
+    def handle_vague_dish(self, dish: str, prefer_varieties: bool = False) -> Dict:
         prompt = f"""
-        당신은 세계 각국의 요리법에 해박한 AI 셰프입니다.
-        '{dish}'가 광범위한 요리 종류라면 하위 요리 3~5가지를 JSON 배열로 출력하세요.
-        요리명만 출력하세요.
+        당신은 세계 각국의 요리법과 재료에 해박하며, 재료의 유무에 따른 대체재료(특히 한국에서 쉽게 구할 수 있는)까지 완벽하게 파악하고 있는 AI 셰프입니다. 복잡한 과정은 간단하게, 모든 이들이 쉽게 따라 할 수 있도록 명확하고 실용적인 레시피를 제공합니다.
+        
+        '{dish}'가 광범위한 요리 종류(예: 파스타, 볶음밥, 커리, 샐러드, 스테이크, 피자, 라면, 국수, 밥, 면, 탕, 찌개, 볶음, 구이 등)인지 판단하고:
+        
+        1. 만약 '{dish}'가 구체적인 요리명이라면, 완전한 레시피를 JSON으로 제공하세요.
+        2. 만약 '{dish}'가 광범위한 요리 종류라면, 하위 요리 3~5가지를 JSON 배열로 출력하세요.
+        3. "형용사/재료 + 요리명"으로 이루어진 복합 요리명(예: "소고기 김밥", "치즈 김밥", "봉골레 파스타", "버섯 리조또")은
+           구체적인 단일 요리명으로 간주하고 1번 규칙을 따르세요(하위 종류를 묻지 말 것).
 
-        예시: ["구체적인 요리명1", "구체적인 요리명2", "구체적인 요리명3"]
+        추가 지시:
+        - 사용자가 "추천"을 요청했거나, '{dish}'가 다양한 변형으로 자주 조합되는 요리(예: 김밥, 샌드위치, 파스타, 볶음밥 등)라면,
+          구체 레시피 대신 하위 종류 3~5가지를 우선 출력하세요.
+        
+        **구체적인 요리명인 경우 레시피 JSON 형식:**
+        {{
+          "title": "{dish}",
+          "ingredients": [
+            {{"item": "재료명", "amount": "수량", "unit": "단위"}},
+            {{"item": "재료명", "amount": "수량", "unit": "단위"}}
+          ],
+          "steps": ["1단계 설명", "2단계 설명", "3단계 설명"]
+        }}
+        
+        **광범위한 요리 종류인 경우:**
+        ["구체적인 요리명1", "구체적인 요리명2", "구체적인 요리명3"]
+        
+        **중요:** 반드시 유효한 JSON 형식으로만 응답하세요. JSON 이외의 텍스트나 설명은 절대 포함하지 마세요.
         """
         data = self.llm.generate_json(prompt)
+        
+        # 배열이 반환되면 모호한 요리로 처리
         if isinstance(data, list) and len(data) > 0:
             return {"title": f"{dish} 종류 추천", "varieties": data, "type": "vague_dish"}
-        return {"title": dish, "type": "vague_dish"}
+        
+        # 객체가 반환되면 구체적인 레시피로 처리
+        if isinstance(data, dict) and data:
+            data.setdefault("title", dish)
+            # ingredients가 객체 배열이 아닌 경우 올바른 형식으로 변환
+            if "ingredients" not in data or not isinstance(data["ingredients"], list) or not data["ingredients"]:
+                data["ingredients"] = [{"item": "재료 정보를 찾을 수 없습니다", "amount": "", "unit": ""}]
+            elif isinstance(data["ingredients"], list) and data["ingredients"] and isinstance(data["ingredients"][0], str):
+                # 문자열 배열인 경우 객체 배열로 변환
+                data["ingredients"] = [{"item": ing, "amount": "", "unit": ""} for ing in data["ingredients"]]
+            
+            data.setdefault("steps", ["조리법 정보를 찾을 수 없습니다"])
+            if isinstance(data.get("steps"), list) and len(data["steps"]) > 15:
+                data["steps"] = data["steps"][:15]
+            return data
+        
+        # fallback
+        return {
+            "title": dish, 
+            "ingredients": [{"item": "재료 정보를 찾을 수 없습니다", "amount": "", "unit": ""}], 
+            "steps": ["조리법 정보를 찾을 수 없습니다"]
+        }
 
     def get_recipe(self, dish: str) -> Dict:
         prompt = f"""
@@ -61,7 +99,13 @@ class Recipes:
         data = self.llm.generate_json(prompt)
         if isinstance(data, dict) and data:
             data.setdefault("title", dish)
-            data.setdefault("ingredients", ["재료 정보를 찾을 수 없습니다"])
+            # ingredients가 객체 배열이 아닌 경우 올바른 형식으로 변환
+            if "ingredients" not in data or not isinstance(data["ingredients"], list) or not data["ingredients"]:
+                data["ingredients"] = [{"item": "재료 정보를 찾을 수 없습니다", "amount": "", "unit": ""}]
+            elif isinstance(data["ingredients"], list) and data["ingredients"] and isinstance(data["ingredients"][0], str):
+                # 문자열 배열인 경우 객체 배열로 변환
+                data["ingredients"] = [{"item": ing, "amount": "", "unit": ""} for ing in data["ingredients"]]
+            
             data.setdefault("steps", ["조리법 정보를 찾을 수 없습니다"])
             if isinstance(data.get("steps"), list) and len(data["steps"]) > 15:
                 data["steps"] = data["steps"][:15]
@@ -69,7 +113,11 @@ class Recipes:
         # fallback to parser
         # In case the model didn't return valid JSON
         # We cannot access the raw response here, so just return minimal structure
-        return {"title": dish, "ingredients": ["재료 정보를 찾을 수 없습니다"], "steps": ["조리법 정보를 찾을 수 없습니다"]}
+        return {
+            "title": dish, 
+            "ingredients": [{"item": "재료 정보를 찾을 수 없습니다", "amount": "", "unit": ""}], 
+            "steps": ["조리법 정보를 찾을 수 없습니다"]
+        }
 
     def get_ingredients(self, dish: str):
         prompt = f"""

@@ -6,19 +6,27 @@ PRONOUNS = ["그거", "그 음식", "이거", "저거", "그것", "이것"]
 
 
 def find_dish_by_pattern(message: str) -> str:
+    # 괄호 내 영문/보조 표기 제거 후 공백 정리
+    text = re.sub(r"\([^)]*\)", "", message or "").strip()
+    
+    # 다단어 + 키워드(레시피/만드는 법/조리법/팁/재료) 앞 구절 캡처
     patterns = [
-        r"([가-힣]+)\s+재료",
+        r"([가-힣A-Za-z\s]{2,30})\s+(?:레시피|만드는\s*법|조리법|팁)",
+        r"([가-힣A-Za-z\s]{2,30})\s+재료",
+        # 단어 1개 패턴(이전 호환)
         r"([가-힣]+)\s+레시피",
         r"([가-힣]+)\s+만드는\s+법",
         r"([가-힣]+)\s+조리법",
         r"([가-힣]+)\s+팁",
+        r"([가-힣]+)\s+재료",
     ]
     for pattern in patterns:
-        match = re.search(pattern, message)
+        match = re.search(pattern, text)
         if match:
-            dish = match.group(1)
-            if 1 < len(dish) < 20:
-                return dish
+            name = match.group(1)
+            name = re.sub(r"\s+", " ", name).strip()
+            if 1 < len(name) < 30:
+                return name
     return ""
 
 
